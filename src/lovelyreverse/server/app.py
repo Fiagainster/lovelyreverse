@@ -143,6 +143,8 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
         def _static(self, rel: str) -> None:
             if rel in ("", "/"):
                 rel = "/index.html"
+            if rel.startswith("/static/"):
+                rel = rel[len("/static"):]
             target = (STATIC_DIR / rel.lstrip("/")).resolve()
             if not str(target).startswith(str(STATIC_DIR.resolve())) or not target.is_file():
                 self._error("not found", 404)
@@ -315,6 +317,24 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
         def _route_post(self) -> None:
             url = urlparse(self.path)
             path = url.path
+
+            # raw-bytes upload (drag & drop): /api/upload?name=foo.exe
+            if path == "/api/upload":
+                qs = parse_qs(url.query)
+                name = (qs.get("name", ["sample.bin"])[0] or "sample.bin")[:120]
+                safe = re.sub(r"[^\w.\- ()\[\]]", "_", name)
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > MAX_BODY:
+                    return self._error("file too large (32 MB limit)", 413)
+                blob = self.rfile.read(length)
+                from lovelyreverse.config import data_dir
+
+                samples = data_dir() / "samples"
+                samples.mkdir(parents=True, exist_ok=True)
+                target = samples / f"{int(time.time())}_{safe}"
+                target.write_bytes(blob)
+                return self._json({"path": str(target)})
+
             body = self._body()
 
             if path == "/api/open":

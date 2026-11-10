@@ -1,4 +1,229 @@
 <!DOCTYPE html>
-<!-- placeholder — replaced by the real workstation UI -->
-<html lang="en"><head><meta charset="utf-8"><title>lovelyreverse</title></head>
-<body><h1>lovelyreverse</h1><p>UI under construction</p></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lovelyreverse — hands-on RE workstation</title>
+<link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ═══════════════════════ top bar ═══════════════════════ -->
+<header id="topbar">
+  <div class="brand">
+    <span class="brand-mark">&lt;<span class="brand-heart">♥</span>/&gt;</span>
+    <span class="brand-name">lovely<b>reverse</b></span>
+    <span class="brand-tag">hands-on RE workstation</span>
+  </div>
+
+  <div class="top-actions">
+    <button id="btn-open" class="btn btn-primary" title="Open a local binary by path, or drop a file anywhere">⌖ Open binary</button>
+    <input id="path-input" type="text" spellcheck="false" placeholder="…or paste an absolute file path + Enter" />
+    <input id="goto-input" type="text" spellcheck="false" placeholder="goto  0x00401234 / name" />
+    <span id="engine-dot" class="engine-dot" title="engine status"><span class="dot"></span><span class="dot-label">idle</span></span>
+  </div>
+</header>
+
+<input type="file" id="file-input" hidden />
+
+<!-- ═══════════════════════ main grid ═══════════════════════ -->
+<main id="grid">
+
+  <!-- ─────────── left: listings ─────────── -->
+  <section id="left" class="panel">
+    <div class="tabbar" id="left-tabs">
+      <button class="tab active" data-tab="functions">functions <em id="count-functions"></em></button>
+      <button class="tab" data-tab="strings">strings <em id="count-strings"></em></button>
+      <button class="tab" data-tab="imports">imports</button>
+      <button class="tab" data-tab="exports">exports</button>
+    </div>
+
+    <div class="tabbody" id="left-body">
+      <div class="tabpane active" data-pane="functions">
+        <input class="filter" id="filter-functions" type="text" spellcheck="false" placeholder="⌕ filter functions…" />
+        <div class="list" id="list-functions"></div>
+      </div>
+      <div class="tabpane" data-pane="strings">
+        <input class="filter" id="filter-strings" type="text" spellcheck="false" placeholder="⌕ filter strings…" />
+        <div class="list" id="list-strings"></div>
+      </div>
+      <div class="tabpane" data-pane="imports"><div class="list" id="list-imports"></div></div>
+      <div class="tabpane" data-pane="exports"><div class="list" id="list-exports"></div></div>
+    </div>
+  </section>
+
+  <div class="vresize" data-resize="left"></div>
+
+  <!-- ─────────── center: code ─────────── -->
+  <section id="center" class="panel">
+    <div class="tabbar" id="center-tabs">
+      <button class="tab active" data-tab="decompile">✎ decompile</button>
+      <button class="tab" data-tab="disasm">⌗ disassembly</button>
+      <button class="tab" data-tab="hex">⊞ memory hex</button>
+      <span class="tab-spring"></span>
+      <button class="tab mini" id="btn-decompile-all" title="Batch-decompile every function into a zip">↧ all functions → zip</button>
+    </div>
+
+    <div class="tabbody" id="center-body">
+      <div class="tabpane active" data-pane="decompile">
+        <div class="code-head" id="decompile-head">
+          <span class="code-title" id="decompile-title">no function selected</span>
+          <button class="btn btn-ghost btn-xs hidden" id="btn-copy-code">⧉ copy</button>
+          <button class="btn btn-ghost btn-xs hidden" id="btn-download-code">↧ .c</button>
+        </div>
+        <div class="code" id="code-decompile"><div class="code-empty">select a function from the left →</div></div>
+      </div>
+
+      <div class="tabpane" data-pane="disasm">
+        <div class="code-head"><span class="code-title" id="disasm-title">—</span></div>
+        <div class="code" id="code-disasm"><div class="code-empty">click a function, constant hit or search result</div></div>
+      </div>
+
+      <div class="tabpane" data-pane="hex">
+        <div class="code-head hexbar">
+          <select id="hex-block"></select>
+          <button class="btn btn-ghost btn-xs" id="hex-prev">◂ prev</button>
+          <button class="btn btn-ghost btn-xs" id="hex-next">next ▸</button>
+          <input id="hex-offset" type="text" spellcheck="false" placeholder="offset" class="mini-input"/>
+          <button class="btn btn-ghost btn-xs" id="hex-go">read</button>
+          <span class="code-title" id="hex-info"></span>
+        </div>
+        <div class="code" id="code-hex"><div class="code-empty">pick a memory block and read it raw</div></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="vresize" data-resize="right"></div>
+
+  <!-- ─────────── right: inspector ─────────── -->
+  <section id="right" class="panel">
+    <div class="tabbar"><span class="tab active static">inspector</span></div>
+    <div class="inspector">
+
+      <div class="insp-group" id="insp-program">
+        <h3>program</h3>
+        <div class="insp-body" id="program-info"><div class="insp-empty">nothing loaded</div></div>
+      </div>
+
+      <div class="insp-group" id="insp-sections">
+        <h3>sections · entropy</h3>
+        <div class="insp-body" id="sections-info"></div>
+      </div>
+
+      <div class="insp-group" id="insp-overlay">
+        <h3>overlay</h3>
+        <div class="insp-body" id="overlay-info"></div>
+      </div>
+
+      <div class="insp-group" id="insp-xrefs">
+        <h3>xrefs · <span id="xrefs-target">—</span></h3>
+        <div class="insp-body" id="xrefs-info"><div class="insp-empty">select a function</div></div>
+      </div>
+
+      <div class="insp-group" id="insp-constants">
+        <h3>crypto constants <em id="count-constants"></em></h3>
+        <div class="insp-body" id="constants-info"><div class="insp-empty">loads with the program</div></div>
+      </div>
+
+    </div>
+  </section>
+
+</main>
+
+<!-- ═══════════════════════ bottom drawer ═══════════════════════ -->
+<section id="drawer" class="open">
+  <button id="drawer-toggle" title="toggle panel">▾ decoder lab</button>
+  <div class="tabbar" id="drawer-tabs">
+    <button class="tab active" data-tab="decoder">⚗ decoder lab</button>
+    <button class="tab" data-tab="search">⌕ search</button>
+    <button class="tab" data-tab="log">▤ log</button>
+  </div>
+
+  <div class="tabbody" id="drawer-body">
+    <!-- decoder lab -->
+    <div class="tabpane active" data-pane="decoder">
+      <div class="decoder-grid">
+        <div class="dec-col">
+          <div class="dec-label">input <span class="dim" id="dec-in-size"></span>
+            <button class="btn btn-ghost btn-xs" id="btn-dec-paste-string" title="load selected string">← string</button>
+          </div>
+          <textarea id="dec-input" spellcheck="false" placeholder="bytes, hex, base64, ciphertext…&#10;tip: click a string in the sidebar, then ← string"></textarea>
+          <div class="dec-row">
+            <label class="chk"><input type="radio" name="dec-mode" value="text" checked> text</label>
+            <label class="chk"><input type="radio" name="dec-mode" value="hex"> hex</label>
+            <label class="chk"><input type="radio" name="dec-mode" value="b64"> b64</label>
+            <span class="spring"></span>
+            <button class="btn btn-primary btn-xs" id="btn-xor-brute">⛨ xor brute</button>
+            <button class="btn btn-xs" id="btn-xor-derive">⛭ derive key</button>
+            <input id="dec-prefix" class="mini-input" type="text" spellcheck="false" placeholder="known prefix, e.g. flag{" style="width:14ch"/>
+            <button class="btn btn-primary btn-xs" id="btn-decode">▸ run chain</button>
+          </div>
+        </div>
+
+        <div class="dec-col dec-ops">
+          <div class="dec-label">chain
+            <span class="spring"></span>
+            <select id="op-select"></select>
+            <button class="btn btn-xs" id="btn-op-add">+ add</button>
+          </div>
+          <div id="op-list" class="op-list"><div class="insp-empty">no ops — result passes through unchanged</div></div>
+        </div>
+
+        <div class="dec-col">
+          <div class="dec-label">output <span class="dim" id="dec-out-size"></span>
+            <label class="chk"><input type="checkbox" id="dec-show-hex"> hex view</label>
+            <button class="btn btn-ghost btn-xs" id="btn-dec-copy">⧉ copy</button>
+          </div>
+          <textarea id="dec-output" spellcheck="false" readonly placeholder="result appears here"></textarea>
+          <div class="dec-log" id="dec-log"></div>
+        </div>
+      </div>
+      <div id="xor-results" class="xor-results"></div>
+    </div>
+
+    <!-- search -->
+    <div class="tabpane" data-pane="search">
+      <div class="search-bar">
+        <input id="search-hex" type="text" spellcheck="false" placeholder="hex byte pattern, e.g. 63 7c 77 7b or 637c777b" />
+        <button class="btn btn-primary btn-xs" id="btn-search">⌕ search memory</button>
+        <span class="dim" id="search-info"></span>
+      </div>
+      <div class="list wide" id="search-results"></div>
+    </div>
+
+    <!-- log -->
+    <div class="tabpane" data-pane="log">
+      <div class="logview" id="logview"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ status bar ═══════════════════════ -->
+<footer id="statusbar">
+  <span id="st-engine">● engine idle</span>
+  <span class="sep">·</span><span id="st-program">no program</span>
+  <span class="sep">·</span><span id="st-fn">0 fn</span>
+  <span class="sep">·</span><span id="st-str">0 strings</span>
+  <span class="spring"></span>
+  <span id="st-job"></span>
+  <span class="sep">·</span><span id="st-version"></span>
+</footer>
+
+<!-- empty-state hero overlay -->
+<div id="hero">
+  <div class="hero-card">
+    <div class="hero-mark">&lt;<span>♥</span>/&gt;</div>
+    <h1>lovely<b>reverse</b></h1>
+    <p class="hero-sub">a hands-on reverse-engineering workstation,<br>powered by the Ghidra engine. no AI — you do the thinking.</p>
+    <button class="btn btn-primary" id="hero-open">⌖ open a binary</button>
+    <p class="hero-hint">…or drop a file anywhere on this page,<br>or paste an absolute path in the bar above.</p>
+    <p class="hero-tip">Ghidra auto-analysis runs on open · try a CTF crackme →</p>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

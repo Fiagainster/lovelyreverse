@@ -233,8 +233,6 @@ class EngineManager:
 
     def _program_info(self) -> dict[str, Any]:
         program = self._require_program()
-        from ghidra.framework import Application
-
         lang = program.getLanguage()
         mem = program.getMemory()
         return {
@@ -245,7 +243,6 @@ class EngineManager:
             "compiler": str(program.getCompilerSpec().getCompilerSpecID()),
             "image_base": _hex(program.getImageBase().getOffset()),
             "size": int(mem.getNumAddresses()),
-            "executable_format_version": Application.getVersion() if Application else "",
             "function_count": program.getFunctionManager().getFunctionCount(),
         }
 
@@ -305,6 +302,17 @@ class EngineManager:
 
         return self.submit(job, timeout=30)
 
+    def _get_decompiler(self) -> Any:
+        """Lazy, cached DecompInterface bound to the current program."""
+        if self._decompiler is None:
+            from ghidra.app.decompiler import DecompInterface, DecompileOptions
+
+            di = DecompInterface()
+            di.setOptions(DecompileOptions())
+            di.openProgram(self.program)
+            self._decompiler = di
+        return self._decompiler
+
     def decompile(self, addr: int) -> dict[str, Any]:
         def job():
             program = self._require_program()
@@ -313,7 +321,7 @@ class EngineManager:
             f = fm.getFunctionAt(a) or fm.getFunctionContaining(a)
             if f is None:
                 raise EngineError(f"no function at {_hex(addr)}")
-            di = self._decompiler()
+            di = self._get_decompiler()
             res = di.decompileFunction(f, 120, _monitor())
             if not res.decompileCompleted():
                 raise EngineError(f"decompile failed: {res.getErrorMessage()}")
@@ -328,7 +336,7 @@ class EngineManager:
         def job():
             program = self._require_program()
             fm = program.getFunctionManager()
-            di = self._decompiler()
+            di = self._get_decompiler()
             out: list[tuple[int, str, str]] = []
             for i, addr in enumerate(addrs):
                 try:
@@ -392,13 +400,15 @@ class EngineManager:
         if self._strings_cache is not None:
             return self._strings_cache
         program = self._require_program()
-        from ghidra.program.util import DefinedDataIterator
-
         out: list[dict[str, Any]] = []
-        for data in DefinedDataIterator.definedStrings(program):
+        for data in program.getListing().getDefinedData(True):
             try:
-                value = str(data.getValue())
+                value = data.getValue()
+                if not isinstance(value, str):
+                    continue
             except Exception:  # noqa: BLE001
+                continue
+            if len(value) < 2:
                 continue
             if len(value) > 4096:
                 value = value[:4096] + "…"
@@ -423,26 +433,34 @@ class EngineManager:
     def _imports_exports(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         program = self._require_program()
         imports: list[dict[str, Any]] = []
-        em = program.getExternalManager()
-        for loc in em.getExternalLocations():
+        st = program.getSymbolTable()
+        for sym in st.getAllSymbols(True):
             try:
-                imports.append({
-                    "name": str(loc.getLabel()),
-                    "library": str(loc.getLibraryName() or ""),
-                })
+                if not sym.isExternal():
+                    continue
+                lib = ""
+                try:
+                    parent = sym.getParentNamespace()
+                    if parent is not None and parent.getName() != "EXTERNAL":
+                        lib = str(parent.getName())
+                except Exception:  # noqa: BLE001
+                    pass
+                imports.append({"name": str(sym.getName()), "library": lib})
             except Exception:  # noqa: BLE001
                 continue
         exports: list[dict[str, Any]] = []
-        st = program.getSymbolTable()
         for addr_off in st.getExternalEntryPointIterator():
-            sym = st.getPrimarySymbol(self._to_addr(int(addr_off)))
-            if sym is not None:
-                exports.append({
-                    "addr": int(addr_off),
-                    "name": sym.getName(),
-                })
+            try:
+                offset = int(addr_off.getOffset())
+                sym = st.getPrimarySymbol(addr_off)
+                if sym is not None:
+                    exports.append({"addr": offset, "name": str(sym.getName())})
+            except Exception:  # noqa: BLE001
+                continue
         imports.sort(key=lambda i: i["name"].lower())
         exports.sort(key=lambda e: e["name"].lower())
+        self._imports_cache = imports
+        self._exports_cache = exports
         return imports, exports
 
     def imports(self) -> list[dict[str, Any]]:
