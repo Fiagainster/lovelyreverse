@@ -1,0 +1,23 @@
+# 参考代码库：仅本地学习用，永不入库
+.reference/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# 构建产物
+build/
+dist/
+out/
+
+# IDE
+.idea/
+.vscode/
+
+# 运行时数据（样本、case 目录等）
+samples/
+*.gpr
+*.rep/
