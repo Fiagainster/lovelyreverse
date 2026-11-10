@@ -1,0 +1,393 @@
+"""HTTP server: stdlib-only routing layer between the UI and the engine.
+
+Zero third-party dependencies — ThreadingHTTPServer + regex routes.  The
+engine is injectable so tests can exercise the whole HTTP surface with a
+stub instead of a real JVM.
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+import json
+import re
+import threading
+import time
+import traceback
+import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Callable
+from urllib.parse import parse_qs, urlparse
+
+from lovelyreverse import __version__
+from lovelyreverse.util.binfile import triage as file_triage
+from lovelyreverse.util.decode import OpError, run_chain
+from lovelyreverse.util.xor import xor_derive, xor_full_decode, xor_single_brute
+
+STATIC_DIR = Path(__file__).parent.parent / "resources" / "static"
+
+MAX_BODY = 32 * 1024 * 1024  # 32 MB cap on request bodies
+
+
+# ------------------------------------------------------------------- job farm
+
+class Job:
+    def __init__(self, job_id: str, kind: str):
+        self.id = job_id
+        self.kind = kind
+        self.status = "running"  # running | done | error
+        self.progress = ""
+        self.log: list[str] = []
+        self.result: Any = None
+        self.error: str | None = None
+        self.created = time.time()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "status": self.status,
+            "progress": self.progress,
+            "log": self.log[-30:],
+            "error": self.error,
+            "result": self.result,
+        }
+
+
+class JobFarm:
+    def __init__(self):
+        self._jobs: dict[str, Job] = {}
+        self._counter = 0
+        self._lock = threading.Lock()
+
+    def spawn(self, kind: str, target: Callable[[Job], Any]) -> str:
+        with self._lock:
+            self._counter += 1
+            job = Job(f"j{self._counter}", kind)
+            self._jobs[job.id] = job
+
+        def run():
+            try:
+                job.result = target(job)
+                job.status = "done"
+            except BaseException as e:  # noqa: BLE001
+                job.error = f"{type(e).__name__}: {e}"
+                traceback.print_exc()
+                job.status = "error"
+
+        threading.Thread(target=run, name=f"lvr-job-{job.id}", daemon=True).start()
+        return job.id
+
+    def get(self, job_id: str) -> Job | None:
+        return self._jobs.get(job_id)
+
+
+# ------------------------------------------------------------------ app state
+
+class AppState:
+    """Everything mutable the handlers touch, in one injectable object."""
+
+    def __init__(self, engine: Any):
+        self.engine = engine
+        self.jobs = JobFarm()
+        self.file_bytes: bytes | None = None
+        self.triage_info: dict[str, Any] | None = None
+        self.source_path: str | None = None
+
+    # ---- shared handlers used by both routes and jobs
+
+    def do_open(self, path: str, job: Job) -> dict[str, Any]:
+        p = Path(path)
+        if not p.is_file():
+            raise ValueError(f"file not found: {path}")
+        self.source_path = str(p)
+        self.file_bytes = p.read_bytes()
+        self.triage_info = file_triage(self.file_bytes)
+        job.log.append(f"file: {p.name} ({len(self.file_bytes):,} bytes)")
+        info = self.engine.open(str(p), progress=lambda s: setattr(job, "progress", s))
+        return info
+
+
+# --------------------------------------------------------------------- server
+
+def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = f"lovelyreverse/{__version__}"
+
+        # ---------------------------------------------------------- plumbing
+
+        def log_message(self, fmt: str, *args: Any) -> None:  # quieter logs
+            pass
+
+        def _json(self, obj: Any, status: int = 200) -> None:
+            body = json.dumps(obj).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _error(self, message: str, status: int = 400) -> None:
+            self._json({"error": str(message)}, status)
+
+        def _body(self) -> dict[str, Any]:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY:
+                raise ValueError("body too large")
+            raw = self.rfile.read(length) if length else b"{}"
+            return json.loads(raw.decode("utf-8") or "{}")
+
+        def _static(self, rel: str) -> None:
+            if rel in ("", "/"):
+                rel = "/index.html"
+            target = (STATIC_DIR / rel.lstrip("/")).resolve()
+            if not str(target).startswith(str(STATIC_DIR.resolve())) or not target.is_file():
+                self._error("not found", 404)
+                return
+            ctype = {
+                ".html": "text/html; charset=utf-8",
+                ".js": "text/javascript; charset=utf-8",
+                ".css": "text/css; charset=utf-8",
+                ".svg": "image/svg+xml",
+                ".png": "image/png",
+                ".ico": "image/x-icon",
+                ".woff2": "font/woff2",
+            }.get(target.suffix, "application/octet-stream")
+            body = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body)
+
+        # ------------------------------------------------------------ routes
+
+        def do_GET(self) -> None:  # noqa: N802
+            try:
+                self._route_get()
+            except BrokenPipeError:
+                pass
+            except Exception as e:  # noqa: BLE001
+                traceback.print_exc()
+                try:
+                    self._error(f"{type(e).__name__}: {e}", 500)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        def do_POST(self) -> None:  # noqa: N802
+            try:
+                self._route_post()
+            except BrokenPipeError:
+                pass
+            except Exception as e:  # noqa: BLE001
+                traceback.print_exc()
+                try:
+                    self._error(f"{type(e).__name__}: {e}", 500)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        def _route_get(self) -> None:
+            url = urlparse(self.path)
+            path, qs = url.path, parse_qs(url.query)
+
+            if not path.startswith("/api/"):
+                if path == "/lovelyreverse.js.map":  # never
+                    self._error("not found", 404)
+                    return
+                self._static(path)
+                return
+
+            def q(name: str, default: str = "") -> str:
+                return qs.get(name, [default])[0]
+
+            def qi(name: str, default: int) -> int:
+                try:
+                    return int(qs.get(name, [str(default)])[0])
+                except ValueError:
+                    return default
+
+            # ----- meta
+            if path == "/api/status":
+                engine_ready = bool(getattr(state.engine, "_thread", None))
+                program_loaded = False
+                try:
+                    program_loaded = state.engine.program_info() is not None
+                except Exception:  # noqa: BLE001
+                    pass
+                return self._json({
+                    "version": __version__,
+                    "engine_ready": engine_ready,
+                    "program_loaded": program_loaded,
+                    "source_path": state.source_path,
+                })
+
+            if path == "/api/triage":
+                if state.triage_info is None:
+                    return self._error("no file loaded", 409)
+                return self._json(state.triage_info)
+
+            if path == "/api/program":
+                info = state.engine.program_info()
+                if info is None:
+                    return self._error("no program loaded", 409)
+                return self._json(info)
+
+            # ----- listings
+            if path == "/api/functions":
+                return self._json(state.engine.list_functions(q("q"), qi("offset", 0), qi("limit", 300)))
+
+            if path == "/api/strings":
+                return self._json(state.engine.list_strings(q("q"), qi("offset", 0), qi("limit", 300)))
+
+            if path == "/api/imports":
+                return self._json({"items": state.engine.imports()})
+
+            if path == "/api/exports":
+                return self._json({"items": state.engine.exports()})
+
+            # ----- per-function
+            m = re.fullmatch(r"/api/function/(\d+)/(decompile|disasm|xrefs)", path)
+            if m:
+                addr, what = int(m.group(1)), m.group(2)
+                if what == "decompile":
+                    return self._json(state.engine.decompile(addr))
+                if what == "disasm":
+                    return self._json(state.engine.disasm(addr, qi("limit", 500)))
+                if what == "xrefs":
+                    return self._json(state.engine.xrefs(addr))
+
+            # ----- memory
+            if path == "/api/memory/blocks":
+                return self._json({"items": state.engine.memory_blocks()})
+
+            if path == "/api/memory/read":
+                import base64 as b64
+
+                data = state.engine.read_memory(q("block"), qi("offset", 0), qi("len", 4096))
+                return self._json({"data_b64": b64.b64encode(data).decode()})
+
+            if path == "/api/search":
+                hits = state.engine.search_hex(q("hex"), qi("limit", 500))
+                return self._json({"items": hits})
+
+            if path == "/api/constants":
+                return self._json({"items": state.engine.constants_scan()})
+
+            # ----- jobs
+            m = re.fullmatch(r"/api/job/(\w+)", path)
+            if m:
+                job = state.jobs.get(m.group(1))
+                if job is None:
+                    return self._error("no such job", 404)
+                return self._json(job.to_dict())
+
+            # ----- downloads
+            m = re.fullmatch(r"/api/download/decompile/(\d+)\.c", path)
+            if m:
+                res = state.engine.decompile(int(m.group(1)))
+                body = res["code"].encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/x-c; charset=utf-8")
+                self.send_header("Content-Disposition",
+                                 f'attachment; filename="{res["name"]}_{m.group(1):x}.c"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
+
+            m = re.fullmatch(r"/api/download/decompile-all\.zip", path)
+            if m:
+                job = state.jobs.get(q("job"))
+                if not job or job.status != "done" or not isinstance(job.result, str):
+                    return self._error("zip not ready", 409)
+                data = Path(job.result).read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                return self.wfile.write(data)
+
+            return self._error("unknown api route", 404)
+
+        def _route_post(self) -> None:
+            url = urlparse(self.path)
+            path = url.path
+            body = self._body()
+
+            if path == "/api/open":
+                src = str(body.get("path", "")).strip()
+                if not src:
+                    return self._error("path required")
+                state.source_path = src  # remembered even before the job finishes
+                job_id = state.jobs.spawn("open", lambda job: state.do_open(src, job))
+                return self._json({"job": job_id})
+
+            if path == "/api/decode":
+                data = base64.b64decode(body.get("input_b64", ""))
+                recipe = body.get("recipe", [])
+                if not isinstance(recipe, list):
+                    return self._error("recipe must be a list")
+                try:
+                    out, log = run_chain(data, recipe)
+                except OpError as e:
+                    return self._error(str(e), 400)
+                return self._json({
+                    "result_b64": base64.b64encode(out).decode(),
+                    "log": log,
+                    "size": len(out),
+                })
+
+            if path == "/api/xor/brute":
+                data = base64.b64decode(body.get("input_b64", ""))
+                if not data:
+                    return self._error("empty input")
+                return self._json({"items": xor_single_brute(data, top=int(body.get("top", 16)))})
+
+            if path == "/api/xor/decode":
+                data = base64.b64decode(body.get("input_b64", ""))
+                key = int(body.get("key", 0)) & 0xFF
+                return self._json(xor_full_decode(data, key))
+
+            if path == "/api/xor/derive":
+                data = base64.b64decode(body.get("input_b64", ""))
+                prefix = str(body.get("prefix", ""))
+                return self._json({"items": xor_derive(data, prefix)})
+
+            if path == "/api/export/decompile-all":
+                if state.engine.program_info() is None:
+                    return self._error("no program loaded", 409)
+
+                def target(job: Job):
+                    funcs = state.engine.list_functions("", 0, 1_000_000)
+                    total = funcs["total"]
+                    addrs = [f["addr"] for f in funcs["items"]]
+                    name = Path(state.source_path or "program").stem
+
+                    def progress(done: int, of: int) -> None:
+                        job.progress = f"decompiling {done}/{of}"
+
+                    results = state.engine.decompile_many(addrs, progress)
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for addr, fname, code in results:
+                            safe = re.sub(r"[^\w.\-]", "_", fname)
+                            zf.writestr(f"{safe}_{addr:x}.c", code)
+                    out = Path(__import__("tempfile").gettempdir()) / f"lvr_{name}_{int(time.time())}.zip"
+                    out.write_bytes(buf.getvalue())
+                    job.progress = f"{len(results)} functions"
+                    return str(out)
+                return self._json({"job": state.jobs.spawn("decompile-all", target)})
+
+            return self._error("unknown api route", 404)
+
+    return Handler
+
+
+def serve(state: AppState, host: str, port: int) -> ThreadingHTTPServer:
+    handler = make_handler(state)
+    httpd = ThreadingHTTPServer((host, port), handler)
+    httpd.daemon_threads = True
+    return httpd

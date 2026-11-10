@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lovelyreverse"
+version = "0.1.0"
+description = "A hands-on reverse-engineering workstation powered by the Ghidra engine. 手搓向逆向工程工作站。"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Fiagainster" }]
+requires-python = ">=3.10"
+keywords = ["reverse-engineering", "ctf", "ghidra", "pyghidra", "binary-analysis", "workstation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+]
+dependencies = [
+    "pyghidra>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+lvr = "lovelyreverse.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Fiagainster/lovelyreverse"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lovelyreverse = ["resources/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "engine: tests that require a real Ghidra installation (GHIDRA_INSTALL_DIR)",
+]
