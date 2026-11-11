@@ -122,12 +122,32 @@ python -m lovelyreverse serve
 
 浏览器自动打开 `http://127.0.0.1:7331`。界面默认**中文 + 浅色主题**（右上角 ⚙ 设置里可切 English / 石墨玫瑰暗色）。把二进制拖进页面、点 ⌖ 打开二进制、或粘贴绝对路径回车——第一次打开一个样本需要跑 Ghidra 自动分析（小文件几十秒），之后秒开。
 
-Ghidra 安装位置按以下顺序发现：`--ghidra <路径>` → `GHIDRA_INSTALL_DIR` 环境变量 → 常见目录自动扫描。
+Ghidra 安装位置按以下顺序发现：`--ghidra <路径>` → `GHIDRA_INSTALL_DIR` 环境变量 → 常见目录自动扫描（`~/Downloads`、`~/Desktop`、`~/tools`、`D:/Tools`、`C:/ghidra`、`/opt`、`/usr/local` 等）。
 
 ```bash
 # 常用参数
 lvr serve --port 7331 --host 127.0.0.1 --no-browser --ghidra "D:\SecurityTools\ghidra_12.2_PUBLIC"
 ```
+
+### 安装自检
+
+不确定环境齐不齐？跑一下：
+
+```bash
+lvr doctor
+```
+
+逐项检查 Python 版本、JDK 21+、Ghidra 安装位置（含自动扫描结果）与端口占用，给出修复提示：
+
+```
+  [ok]   python 3.13.5
+  [ok]   java 25 (C:\Program Files\Java\jdk-25\bin\java.exe)
+  [ok]   ghidra D:\SecurityTools\ghidra_12.2_PUBLIC
+  [ok]   port 7331 free
+  all good — run: lvr serve
+```
+
+`lvr serve` 启动时也会做同样的事：Ghidra 路径不合法、Java 缺失或低于 21 都会在启动阶段直接报错并给出修复指引，而不是等到第一次打开二进制才炸。
 
 > 依赖极简：除 `pyghidra` 外**零第三方依赖**——HTTP 服务是 stdlib 手写的，前端是原生 JS，离线可用。
 
