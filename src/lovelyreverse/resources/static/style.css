@@ -359,7 +359,32 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--faint); }
 .verdict.v-bad .verdict-main { color: var(--red); }
 
 /* ── X2: right-click context menu ── */
-#ctx-menu { position: fixed; z-index: 70; min-width: 170px; box-shadow: var(--shadow); }
+#ctx-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 118px;
+  max-width: 240px;
+  padding: 4px;
+  box-shadow: var(--shadow);
+}
+/* compact single-line items: icon + short label (the recent-menu .menu-item
+   is a two-line column layout; the context menu wants IDA-style rows) */
+#ctx-menu .menu-item {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+#ctx-menu .mi-icon {
+  width: 14px;
+  flex: none;
+  text-align: center;
+  color: var(--faint);
+  font-size: 11px;
+}
+#ctx-menu .menu-item:hover .mi-icon { color: var(--rose); }
 .menu-sep { height: 1px; background: var(--line); margin: 3px 0; }
 .chip.c-hash { color: var(--amber); border-color: var(--amber-dim); }
 .chip.c-ecc { color: var(--cyan); border-color: var(--cyan-dim); }
