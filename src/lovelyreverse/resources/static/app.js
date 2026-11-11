@@ -80,6 +80,7 @@ function sendToDecoder(text, mode = "text") {
   const radio = document.querySelector(`input[name="dec-mode"][value="${mode}"]`);
   if (radio) radio.checked = true;
   $("#drawer").classList.remove("closed");
+  $("#drawer").classList.add("open"); // keep the two state classes mutually exclusive
   $("#drawer-toggle").textContent = t("drawer.hide");
   $$("#drawer-tabs .tab").forEach((tb) => tb.classList.toggle("active", tb.dataset.tab === "decoder"));
   $$("#drawer-body > .tabpane").forEach((p) => p.classList.toggle("active", p.dataset.pane === "decoder"));
@@ -2050,11 +2051,14 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#btn-search").onclick = runSearch;
   $("#search-hex").addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
 
-  // drawer toggle
+  // drawer toggle — `open`/`closed` are mutually exclusive (the hero's
+  // body:has(#drawer.open) rule relies on it; stale `.open` used to keep the
+  // empty-state hero hidden forever after collapsing)
   $("#drawer-toggle").onclick = () => {
     const d = $("#drawer");
-    d.classList.toggle("closed");
-    $("#drawer-toggle").textContent = d.classList.contains("closed") ? t("drawer.show") : t("drawer.hide");
+    const closed = d.classList.toggle("closed");
+    d.classList.toggle("open", !closed);
+    $("#drawer-toggle").textContent = closed ? t("drawer.show") : t("drawer.hide");
   };
 
   logLine(t("log.welcome"), "ok");

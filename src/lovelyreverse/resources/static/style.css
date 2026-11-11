@@ -555,6 +555,10 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--faint); }
   z-index: 50; /* above #hero (z 40) — keep the lab usable/reachable on the empty state */
 }
 #drawer.closed { height: 32px !important; overflow: hidden; }
+/* keep #grid's height formula in sync with the collapsed strip — without
+   this the page keeps reserving the full 236px and shows dead space below
+   the status bar (grid subtracts var(--drawer-h) which nothing ever set) */
+body:has(#drawer.closed) { --drawer-h: 32px; }
 #drawer-toggle {
   position: absolute;
   right: 10px;
