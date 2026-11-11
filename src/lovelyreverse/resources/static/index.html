@@ -60,6 +60,7 @@
     <div class="tabbar" id="center-tabs">
       <button class="tab active" data-tab="decompile">✎ decompile</button>
       <button class="tab" data-tab="disasm">⌗ disassembly</button>
+      <button class="tab" data-tab="graph">◈ call graph</button>
       <button class="tab" data-tab="hex">⊞ memory hex</button>
       <span class="tab-spring"></span>
       <button class="tab mini" id="btn-decompile-all" title="Batch-decompile every function into a zip">↧ all functions → zip</button>
@@ -78,6 +79,20 @@
       <div class="tabpane" data-pane="disasm">
         <div class="code-head"><span class="code-title" id="disasm-title">—</span></div>
         <div class="code" id="code-disasm"><div class="code-empty">click a function, constant hit or search result</div></div>
+      </div>
+
+      <div class="tabpane" data-pane="graph">
+        <div class="code-head graphbar">
+          <select id="graph-depth">
+            <option value="1">depth 1</option>
+            <option value="2" selected>depth 2</option>
+            <option value="3">depth 3</option>
+          </select>
+          <button class="btn btn-ghost btn-xs" id="graph-refresh">⟲ rebuild</button>
+          <span class="code-title" id="graph-info">select a function, then rebuild</span>
+          <span class="dim" id="graph-stats"></span>
+        </div>
+        <canvas id="graph-canvas"></canvas>
       </div>
 
       <div class="tabpane" data-pane="hex">
@@ -117,7 +132,9 @@
       </div>
 
       <div class="insp-group" id="insp-xrefs">
-        <h3>xrefs · <span id="xrefs-target">—</span></h3>
+        <h3>xrefs · <span id="xrefs-target">—</span>
+          <button class="btn btn-ghost btn-xs" id="btn-show-graph" title="open call graph around this function">◈ graph</button>
+        </h3>
         <div class="insp-body" id="xrefs-info"><div class="insp-empty">select a function</div></div>
       </div>
 

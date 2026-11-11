@@ -220,7 +220,7 @@ async function selectFunction(addr, name, opts = {}) {
   try {
     const res = await api(`function/${addr}/decompile`);
     renderCode(res.code);
-    if (activeTab("#center-tabs") !== "decompile" && !opts.keepTab)
+    if (activeTab("#center-tabs") !== "decompile" && !opts.keepTab && activeTab("#center-tabs") !== "graph")
       switchCenter("decompile");
   } catch (e) {
     code.innerHTML = `<div class="code-empty">decompile failed: ${esc(e.message)}</div>`;
@@ -313,13 +313,15 @@ async function showDisasm(addr, alsoSelect) {
       const parts = ins.text.split(/\s+/);
       const mn = parts[0] || "";
       const rest = ins.text.slice(mn.length);
-      const target = ins.refs && ins.refs.length
-        ? `<span class="disasm-target" data-addr="${ins.refs[0]}">${hexpad(ins.refs[0])}</span>`
+      const ref = ins.refs && ins.refs.length ? ins.refs[0] : null;
+      const alreadyShown = ref != null && ins.text.toLowerCase().includes(ref.toString(16));
+      const target = ref != null && !alreadyShown
+        ? ` <span class="disasm-target" data-addr="${ref}">${hexpad(ref)}</span>`
         : "";
       return `<div class="disasm-row" data-addr="${ins.addr}">
         <span class="disasm-addr">${hexpad(ins.addr)}</span>
         <span class="disasm-bytes">${esc(ins.bytes)}</span>
-        <span class="disasm-text"><span class="disasm-mnemonic">${esc(mn)}</span>${esc(rest)} ${target}</span>
+        <span class="disasm-text"><span class="disasm-mnemonic">${esc(mn)}</span>${esc(rest)}${target}</span>
       </div>`;
     }).join("");
     box.querySelectorAll(".disasm-target").forEach((t) =>
@@ -711,6 +713,245 @@ async function decompileAll() {
   } finally { setBusy(false); }
 }
 
+/* ═══════════════════════ call graph (canvas force layout) ═══════════════════════ */
+
+const G = {
+  nodes: [],          // {addr, name, x, y, vx, vy, fixed}
+  posById: new Map(),
+  edges: [],          // {a, b}
+  center: null,
+  scale: 1, tx: 0, ty: 0,
+  alpha: 0, draggingNode: null, panning: false,
+  hover: null, selected: null,
+  raf: 0, canvas: null, ctx: null,
+};
+
+async function showGraph(addr) {
+  const depth = Number($("#graph-depth").value || 2);
+  $("#graph-info").textContent = `building neighborhood of ${hexpad(addr)}…`;
+  try {
+    const g = await api(`function/${addr}/callgraph?depth=${depth}&max=220`);
+    G.center = g.center;
+    $("#graph-info").innerHTML = `center <b>${hexpad(g.center)}</b>`;
+    $("#graph-stats").textContent = `${g.nodes.length} nodes · ${g.edges.length} edges`;
+    // keep existing positions for stable re-layout
+    const old = new Map(G.nodes.map((n) => [n.addr, n]));
+    const W = G.canvas?.clientWidth || 800, H = G.canvas?.clientHeight || 500;
+    G.nodes = g.nodes.map((n, i) => {
+      const o = old.get(n.addr);
+      return {
+        addr: n.addr, name: n.name,
+        x: o?.x ?? W / 2 + Math.cos(i / g.nodes.length * Math.PI * 2) * 160,
+        y: o?.y ?? H / 2 + Math.sin(i / g.nodes.length * Math.PI * 2) * 160,
+        vx: 0, vy: 0, fixed: false,
+      };
+    });
+    G.posById = new Map(G.nodes.map((n) => [n.addr, n]));
+    G.edges = g.edges
+      .filter(([a, b]) => G.posById.has(a) && G.posById.has(b))
+      .map(([a, b]) => ({ a, b }));
+    G.selected = addr;
+    layoutGraph(W, H);
+    startGraphLoop();
+  } catch (e) {
+    $("#graph-info").textContent = e.message;
+  }
+}
+
+function layoutGraph(W, H, ticks = 260) {
+  const n = G.nodes.length;
+  if (!n) return;
+  const REP = Math.min(24000, 900000 / Math.max(n, 40));
+  for (let t = 0; t < ticks; t++) {
+    stepGraph(W, H, REP, 1);
+    G.alpha *= 0.985;
+  }
+}
+
+function stepGraph(W, H, REP, strength) {
+  const nodes = G.nodes;
+  // repulsion (capped O(n²))
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 1) d2 = 1, dx = 1;
+      if (d2 > 360000) continue;            // cut long-range forces
+      const f = (REP / d2) * strength;
+      const d = Math.sqrt(d2);
+      const fx = (dx / d) * f, fy = (dy / d) * f;
+      a.vx += fx; a.vy += fy;
+      b.vx -= fx; b.vy -= fy;
+    }
+  }
+  // springs
+  for (const e of G.edges) {
+    const a = G.posById.get(e.a), b = G.posById.get(e.b);
+    if (!a || !b) continue;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.max(1, Math.hypot(dx, dy));
+    const f = (d - 110) * 0.02 * strength;
+    const fx = (dx / d) * f, fy = (dy / d) * f;
+    a.vx += fx; a.vy += fy;
+    b.vx -= fx; b.vy -= fy;
+  }
+  // gravity + integrate
+  for (const nd of nodes) {
+    const gx = (W / 2 - nd.x) * 0.012, gy = (H / 2 - nd.y) * 0.012;
+    nd.vx += gx; nd.vy += gy;
+    if (nd.addr === G.center) { nd.vx += gx; nd.vy += gy; }  // center pulled twice
+    if (nd.fixed) { nd.vx = nd.vy = 0; continue; }
+    nd.x += nd.vx * 0.5; nd.y += nd.vy * 0.5;
+    nd.vx *= 0.82; nd.vy *= 0.82;
+  }
+}
+
+function startGraphLoop() {
+  if (G.raf) cancelAnimationFrame(G.raf);
+  const loop = () => {
+    const settled = G.alpha <= 0.003 && !G.draggingNode && !G.panning && !G.hover;
+    drawGraph();
+    if (settled) { G.raf = 0; return; }   // stop burning frames once at rest
+    G.raf = requestAnimationFrame(loop);
+  };
+  G.raf = requestAnimationFrame(loop);
+}
+
+function pokeGraph() {
+  // wake the render loop after any interaction/state change
+  G.alpha = Math.max(G.alpha, 0.15);
+  if (!G.raf) startGraphLoop();
+}
+
+function drawGraph() {
+  const c = G.canvas, ctx = G.ctx;
+  if (!c) return;
+  const W = c.clientWidth, H = c.clientHeight;
+  if (c.width !== W * devicePixelRatio || c.height !== H * devicePixelRatio) {
+    c.width = W * devicePixelRatio; c.height = H * devicePixelRatio;
+  }
+  // settle: run a few sim steps while energy is high
+  if (G.alpha > 0.002) {
+    const REP = Math.min(24000, 900000 / Math.max(G.nodes.length, 40));
+    for (let t = 0; t < 2; t++) stepGraph(W, H, REP, G.alpha);
+    G.alpha *= 0.995;
+  }
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(G.tx, G.ty);
+  ctx.scale(G.scale, G.scale);
+
+  // edges
+  ctx.lineWidth = 1;
+  for (const e of G.edges) {
+    const a = G.posById.get(e.a), b = G.posById.get(e.b);
+    if (!a || !b) continue;
+    const hot = G.hover && (e.a === G.hover || e.b === G.hover);
+    ctx.strokeStyle = hot ? "rgba(125,217,154,.9)" : "rgba(255,93,143,.28)";
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  // nodes
+  ctx.font = "11px 'JetBrains Mono', Consolas, monospace";
+  ctx.textAlign = "center";
+  for (const n of G.nodes) {
+    const w = Math.min(180, ctx.measureText(n.name).width + 16);
+    const h = 22;
+    const isCenter = n.addr === G.center;
+    const isSel = n.addr === G.selected;
+    const isHover = n.addr === G.hover;
+    ctx.beginPath();
+    ctx.roundRect(n.x - w / 2, n.y - h / 2, w, h, 5);
+    if (isCenter) { ctx.fillStyle = "#ff5d8f"; ctx.fill(); ctx.fillStyle = "#17060d"; }
+    else { ctx.fillStyle = isHover ? "#252031" : "#1c1823"; ctx.fill(); ctx.strokeStyle = isSel ? "#6fd3e8" : "#3a3247"; ctx.lineWidth = isSel ? 1.6 : 1; ctx.stroke(); ctx.fillStyle = "#e9e3f0"; }
+    ctx.fillText(n.name, n.x, n.y + 3.5);
+  }
+  ctx.restore();
+}
+
+function graphHit(mx, my) {
+  const x = (mx - G.tx) / G.scale, y = (my - G.ty) / G.scale;
+  const ctx = G.ctx;
+  for (const n of G.nodes) {
+    const w = Math.min(180, ctx.measureText(n.name).width + 16);
+    if (Math.abs(x - n.x) <= w / 2 && Math.abs(y - n.y) <= 11) return n;
+  }
+  return null;
+}
+
+function wireGraph() {
+  const c = $("#graph-canvas");
+  G.canvas = c;
+  G.ctx = c.getContext("2d");
+  let downX = 0, downY = 0, moved = false, hitAtDown = null;
+
+  c.addEventListener("mousedown", (e) => {
+    const r = c.getBoundingClientRect();
+    const hit = graphHit(e.clientX - r.left, e.clientY - r.top);
+    hitAtDown = hit;
+    downX = e.clientX; downY = e.clientY; moved = false;
+    if (hit) { G.draggingNode = hit; hit.fixed = true; pokeGraph(); }
+    else { G.panning = true; c.classList.add("grabbing"); }
+  });
+  window.addEventListener("mousemove", (e) => {
+    const r = c.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    if (G.draggingNode) {
+      G.draggingNode.x = (mx - G.tx) / G.scale;
+      G.draggingNode.y = (my - G.ty) / G.scale;
+      pokeGraph();
+      return;
+    }
+    if (G.panning) {
+      if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 3) moved = true;
+      G.tx += e.movementX; G.ty += e.movementY;
+      return;
+    }
+    const hit = graphHit(mx, my);
+    G.hover = hit?.addr ?? null;
+    c.classList.toggle("nodehover", !!hit);
+  });
+  window.addEventListener("mouseup", (e) => {
+    const wasNode = G.draggingNode;
+    if (wasNode) { wasNode.fixed = false; G.draggingNode = null; }
+    if (G.panning && !moved && hitAtDown) {
+      // simple click on a node → select it (and update inspector)
+      selectFunction(hitAtDown.addr, hitAtDown.name, { keepTab: true });
+      G.selected = hitAtDown.addr;
+    }
+    G.panning = false;
+    c.classList.remove("grabbing");
+  });
+  c.addEventListener("dblclick", (e) => {
+    const r = c.getBoundingClientRect();
+    const hit = graphHit(e.clientX - r.left, e.clientY - r.top);
+    if (hit) selectFunction(hit.addr, hit.name);   // → decompile tab
+  });
+  c.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const r = c.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    const k = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const ns = Math.max(0.15, Math.min(4, G.scale * k));
+    G.tx = mx - ((mx - G.tx) / G.scale) * ns;
+    G.ty = my - ((my - G.ty) / G.scale) * ns;
+    G.scale = ns;
+  }, { passive: false });
+  // re-center view
+  $("#graph-refresh").onclick = () => {
+    if (S.currentFunc) showGraph(S.currentFunc.addr);
+  };
+  c.addEventListener("mousemove", () => { if (!G.raf && (G.alpha > 0.003 || G.draggingNode || G.panning)) pokeGraph(); });
+  $("#graph-depth").onchange = () => {
+    if (S.currentFunc) showGraph(S.currentFunc.addr);
+  };
+}
+
 /* ═══════════════════════ goto ═══════════════════════ */
 
 async function gotoInput() {
@@ -755,10 +996,18 @@ window.addEventListener("DOMContentLoaded", async () => {
   wireTabs("#center-tabs", "#center-body", (tab) => {
     if (tab === "hex" && S.hexBlock && !$("#code-hex .hexgrid")) readHex();
     if (tab === "disasm" && S.currentFunc) showDisasm(S.currentFunc.addr);
+    if (tab === "graph" && S.currentFunc && !G.nodes.length) showGraph(S.currentFunc.addr);
   });
   wireTabs("#drawer-tabs", "#drawer-body");
   wireResizer('[data-resize="left"]', "--left-w", 180, 520);
   wireResizer('[data-resize="right"]', "--right-w", 200, 560);
+  wireGraph();
+  $("#btn-show-graph").onclick = () => {
+    if (S.currentFunc) {
+      switchCenter("graph");
+      showGraph(S.currentFunc.addr);
+    } else toast("select a function first", "info");
+  };
 
   // boot status
   try {

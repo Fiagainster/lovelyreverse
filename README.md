@@ -1,17 +1,162 @@
 # lovelyreverse
 
-> 🚧 **WIP** — A hands-on reverse-engineering workstation powered by the Ghidra engine.
+> **手搓向的逆向工程工作站** — PyGhidra 驱动 Ghidra 引擎，界面专为手工分析 / CTF 解题设计。
+> **No AI inside.** 这个工具不替你思考——它让你思考得更快。
 >
-> 一个手搓向的逆向工程工作站：PyGhidra 驱动 Ghidra 引擎做分析/反编译，界面专为手工分析、CTF 解题设计。无 AI，工具本身不替你思考——它让你思考得更快。
+> A hands-on reverse-engineering workstation powered by the Ghidra engine, built for manual analysis and CTF work. No AI — the tool doesn't think for you, it makes you think faster.
 
-- 平台：Windows 优先
-- 引擎：Ghidra 12.x（PyGhidra）
-- 状态：设计与参考调研中，开发未开始
+<p align="center">
+  <img src="docs/screenshots/workstation.png" width="96%" alt="lovelyreverse workstation — decompile view">
+  <br/>
+  <em>Decompile view — clickable identifiers, syntax highlighting, live entropy bars</em>
+</p>
 
-## 开发计划
+<p align="center">
+  <img src="docs/screenshots/callgraph.png" width="96%" alt="lovelyreverse call graph">
+  <br/>
+  <em>Call graph — force-directed neighborhood around the current function</em>
+</p>
 
-- [ ] 产品设计（功能面板、交互草案）
-- [ ] 技术选型验证（PyGhidra 嵌入、UI 框架）
-- [ ] MVP
+## 这是什么
 
-<!-- README 将随开发重写 -->
+打开一个二进制，Ghidra 引擎自动分析；然后在浏览器里以 IDE 三栏布局完成整个手搓流程：
+函数列表 → 伪代码 → 汇编 → 内存十六进制 → 交叉引用 → 调用图 → 解码实验室 → 解题。
+
+名字里的 ♥（lovely + reverse）就是这个项目的态度：逆向是手艺活，工具应该像一把顺手的刻刀，而不是一个代劳的黑盒。
+
+<p align="center">
+  <img src="docs/screenshots/hero.png" width="60%" alt="lovelyreverse empty state">
+</p>
+
+## 功能
+
+### 分析核心（Ghidra 引擎，进程内直驱）
+
+| 面板 | 能力 |
+|---|---|
+| **functions** | 全量函数列表，实时过滤，滚动加载；点击即反编译 |
+| **✎ decompile** | C 伪代码 + 自研语法高亮；**代码里的函数名/地址可点击跳转**；一键复制 / 下载 `.c` |
+| **⌗ disassembly** | 汇编清单（地址/字节/助记符），call 目标可点击跟进 |
+| **◈ call graph** | **函数调用图**（力导向布局）：以当前函数为中心 BFS 展开，滚轮缩放、拖拽平移、点选跳转 |
+| **⊞ memory hex** | 按内存块原始读取，翻页/跳偏移 |
+| **strings** | Ghidra 识别的字符串，一键送入解码实验室 |
+| **imports / exports** | 导入函数（含所属库）与导出入口 |
+| **inspector** | 程序信息（格式/架构/编译器/基址）、节区熵值条（>7.2 提示 likely packed）、**Overlay 附加数据检测**、交叉引用、加密常量命中 |
+
+### CTF 特化（本工具的存在意义）
+
+- **加密常量识别**（FindCrypt 精髓）：内置 40+ 签名——AES S-box/Te0、SM4 S-box/FK、SM3 IV、MD5/SHA-1/SHA-256/SHA-512 IV 与 K 表、Blowfish P 数组、Camellia σ、TEA/XTEA δ、ChaCha σ、Base64/32/Uuencode 字母表、CRC 表、ECC 域素数（程序化生成，零抄写错误）。自动展开大小端双变体，命中自动归属到函数。打开一个带 AES 的 crackme，`.rdata` 里的 S-box 直接标出来。
+- **解码实验室**（CyberChef 精髓）：28 种操作**链式**叠加（hex/base64/base32/ascii85/URL/ROT-n/ROT47/XOR/RC4/位反转/C 转义/gzip/zlib/raw inflate/MD5/SHA-1/SHA-256…），输入支持 text/hex/b64 三种模式。
+- **XOR 工具箱**：
+  - 单字节爆破 + 可打印评分排序（`⛨ xor brute`）
+  - **已知明文推密钥**（`⛭ derive key`）：输入 `flag{` 前缀，直接算出循环 XOR 密钥（含周期一致性检查）
+- **Overlay / 熵分析**（binwalk 精髓）：纯 Python 解析 PE/ELF 节表，`end_of_raw` 之后的数据判为 overlay；逐节香农熵 + 全文件熵剖面，加壳一眼可见。
+- **批量反编译**：一键把全部函数导出为 zip（每个函数一个 `.c`）。
+
+### 实战验证
+
+用本工具实测（2026-11-10）：
+
+- 学习笔记中的 `ez_debug` 密文，解码链 `[xor ATRI] → [xor 17]` 直接解出 `flag{y0u_ar3_g0od_@_Debu9}`
+- gcc 编译的含 AES S-box / SHA-256 K / TEA δ / Base64 表的测试程序，常量扫描 **5/5 命中、零误报**，TEA δ 正确归属到 `tea_encrypt` 函数
+
+## 快速开始
+
+### 前置要求
+
+- **Python ≥ 3.10**（3.13 实测通过）
+- **Java JDK 21+**（Ghidra 12.x 要求；Java 25 实测通过）
+- **Ghidra 11.3+ 或 12.x**（[下载](https://github.com/NationalSecurityAgency/ghidra/releases)）
+- Windows 优先（Linux/macOS 理论可用，未系统测试）
+
+### 安装
+
+```bash
+git clone https://github.com/Fiagainster/lovelyreverse.git
+cd lovelyreverse
+pip install -e .
+```
+
+### 启动
+
+```bash
+lvr serve
+# 或
+python -m lovelyreverse serve
+```
+
+浏览器自动打开 `http://127.0.0.1:7331`。把二进制拖进页面、点 Open binary、或粘贴绝对路径回车——第一次打开一个样本需要跑 Ghidra 自动分析（小文件几十秒），之后秒开。
+
+Ghidra 安装位置按以下顺序发现：`--ghidra <路径>` → `GHIDRA_INSTALL_DIR` 环境变量 → 常见目录自动扫描。
+
+```bash
+# 常用参数
+lvr serve --port 7331 --host 127.0.0.1 --no-browser --ghidra "D:\SecurityTools\ghidra_12.2_PUBLIC"
+```
+
+> 依赖极简：除 `pyghidra` 外**零第三方依赖**——HTTP 服务是 stdlib 手写的，前端是原生 JS，离线可用。
+
+## 典型 CTF 工作流
+
+```
+拿到 crackme.exe
+  ↓ 拖进 lovelyreverse
+分析完成 → inspector 里看熵值（加壳？）、Overlay（有附加数据？）、加密常量（AES？TEA？）
+  ↓ strings 面板搜 "flag" / "correct" / "wrong"
+点字符串 → xrefs 找到比对函数 → 伪代码读算法
+  ↓ 伪代码里 XOR 循环 + 硬编码密文
+复制密文进解码实验室 → derive key 输入 "flag{" 推出密钥 → 一键解码
+  ↓
+flag 到手
+```
+
+## 架构
+
+```
+浏览器 (vanilla JS IDE)  ⇄  stdlib ThreadingHTTPServer  ⇄  EngineManager  ⇄  PyGhidra ⇄ Ghidra JVM
+                          零依赖，静态文件+JSON API        单线程任务队列（Ghidra 非线程安全）
+```
+
+- **EngineManager**（`src/lovelyreverse/engine/manager.py`）：JVM 所有权 + 单 worker 线程串行化所有 Ghidra 调用；项目缓存于 `~/.lovelyreverse/projects`，同一二进制二次打开秒级
+- **零依赖 HTTP 层**（`server/app.py`）：正则路由 + 任务农场（打开/批量反编译为后台 job，前端轮询）
+- **纯逻辑层**（`util/`）：`decode.py`（28 ops）、`xor.py`（爆破/推钥）、`binfile.py`（PE/ELF/熵/overlay，无任何依赖）
+- **签名库**（`engine/constants.py`）：声明式签名表，DWORD 类自动生成 BE/LE 变体
+
+## 测试
+
+```bash
+pip install -e .[dev]
+
+# 单元 + 服务层（97 个测试中 92 个，无需 Ghidra）
+python -m pytest -m "not engine"
+
+# 引擎集成测试（需要 GHIDRA_INSTALL_DIR + gcc，编译 crypto_demo 夹具 → 真实分析 → 断言）
+GHIDRA_INSTALL_DIR="D:\SecurityTools\ghidra_12.2_PUBLIC" python -m pytest -m engine
+```
+
+CI（GitHub Actions，ubuntu + windows × Python 3.11/3.13）跑 `-m "not engine"`；引擎测试留给有 Ghidra 的本地环境。
+
+## 路线图
+
+- [ ] Linux/macOS 系统性支持
+- [ ] 结构体/数据类型编辑，Union 面板
+- [ ] Pattern Language（参考 ImHex）声明式解析数据
+- [ ] gdb / x64dbg 桥接（动态调试面板）
+- [ ] PyInstaller 一键解包（pyinstxtractor 内置化）+ pycdc 集成
+- [ ] 签名库社区化：YARA 规则导入、用户自定义签名
+- [ ] Ghidra 数据库复用（免重分析）
+- [ ] 国际化（i18n）
+
+## 致谢
+
+站在巨人的肩膀上（本仓库 `.reference/` 调研过它们）：
+
+- [Ghidra / PyGhidra](https://ghidra-sre.org/) — NSA，分析引擎本体
+- [CyberChef](https://github.com/gchq/CyberChef) — 解码实验室的 Recipe 范式来源
+- [FindCrypt-Ghidra](https://github.com/d3v1l401/FindCrypt-Ghidra) / [signsrch](https://github.com/nihilus/IDA_Signsrch) — 常量识别思路
+- [Cutter](https://github.com/rizinorg/cutter) / [ImHex](https://github.com/WerWolv/ImHex) — 工作站交互参考
+- [DIE](https://github.com/horsicq/DIE-engine) / [capa](https://github.com/mandiant/capa) — 检测启发式参考
+
+## 许可
+
+MIT — 见 [LICENSE](LICENSE)。

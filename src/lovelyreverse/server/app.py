@@ -252,7 +252,7 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                 return self._json({"items": state.engine.exports()})
 
             # ----- per-function
-            m = re.fullmatch(r"/api/function/(\d+)/(decompile|disasm|xrefs)", path)
+            m = re.fullmatch(r"/api/function/(\d+)/(decompile|disasm|xrefs|callgraph)", path)
             if m:
                 addr, what = int(m.group(1)), m.group(2)
                 if what == "decompile":
@@ -261,6 +261,8 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     return self._json(state.engine.disasm(addr, qi("limit", 500)))
                 if what == "xrefs":
                     return self._json(state.engine.xrefs(addr))
+                if what == "callgraph":
+                    return self._json(state.engine.callgraph(addr, qi("depth", 2), qi("max", 250)))
 
             # ----- memory
             if path == "/api/memory/blocks":

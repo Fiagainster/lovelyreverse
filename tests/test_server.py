@@ -67,6 +67,11 @@ class StubEngine:
         return {"to": [{"addr": 0x401100, "type": "CALL", "function": "caller"}],
                 "from": [{"addr": addr, "to": 0x402000, "type": "CALL"}]}
 
+    def callgraph(self, addr, depth=2, max_nodes=250):
+        return {"center": addr,
+                "nodes": [{"addr": addr, "name": "main"}, {"addr": 0x402000, "name": "callee"}],
+                "edges": [[addr, 0x402000]]}
+
     # memory
     def memory_blocks(self):
         return [{"name": ".text", "start": 0x401000, "size": 0x1000, "initialized": True,
@@ -152,6 +157,12 @@ class TestStubbedApi:
     def test_xrefs(self, server):
         _, data = get(server, "/api/function/4198400/xrefs")
         assert data["to"][0]["function"] == "caller"
+
+    def test_callgraph(self, server):
+        _, data = get(server, "/api/function/4198400/callgraph?depth=2")
+        assert data["center"] == 4198400
+        assert len(data["nodes"]) == 2
+        assert data["edges"][0] == [4198400, 0x402000]
 
     def test_memory_read(self, server):
         _, data = get(server, "/api/memory/read?block=.text&offset=3&len=4")

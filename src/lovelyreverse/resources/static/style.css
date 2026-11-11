@@ -299,6 +299,13 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--faint); }
 .hexbar select { max-width: 22ch; }
 #hex-info { margin-left: auto; }
 
+/* call graph */
+#graph-canvas { flex: 1; min-height: 0; background: var(--bg0); cursor: grab; }
+#graph-canvas.grabbing { cursor: grabbing; }
+#graph-canvas.nodehover { cursor: pointer; }
+.graphbar select { max-width: 12ch; }
+#graph-stats { font-size: 11px; }
+
 /* ─────────────────────────── inspector ─────────────────────────── */
 
 .inspector { flex: 1; overflow-y: auto; padding: 10px; }

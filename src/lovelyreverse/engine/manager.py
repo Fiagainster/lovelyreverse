@@ -46,8 +46,9 @@ class _Box:
 
 
 class EngineManager:
-    def __init__(self, ghidra_install_dir: Path | None = None):
+    def __init__(self, ghidra_install_dir: Path | None = None, project_dir_path: Path | None = None):
         self._ghidra_dir = ghidra_install_dir
+        self._project_dir_path = project_dir_path or project_dir()
         self._queue: queue.Queue[tuple[Callable[[], Any], _Box] | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._boot_error: BaseException | None = None
@@ -71,11 +72,13 @@ class EngineManager:
             self._thread = threading.Thread(target=self._worker, name="lvr-engine", daemon=True)
             self._thread.start()
             # wait for JVM boot (or boot failure) before accepting work
-            deadline = time.time() + 600
+            deadline = time.time() + 300
             while time.time() < deadline:
-                if self._queue.empty() and (self._booted or self._boot_error):
+                if self._booted or self._boot_error:
                     break
                 time.sleep(0.1)
+            else:
+                raise EngineError("JVM boot timed out after 300s")
             if self._boot_error:
                 raise EngineError(f"JVM boot failed: {self._boot_error}") from self._boot_error
 
@@ -141,7 +144,7 @@ class EngineManager:
             if progress:
                 progress(f"importing {src.name}")
 
-            pdir = project_dir() / "main"
+            pdir = self._project_dir_path / "main"
             pdir.mkdir(parents=True, exist_ok=True)
             if (pdir / "main.rep").exists() or (pdir / "main.gpr").exists():
                 project = GhidraProject.openProject(pdir, "main", True)
@@ -210,6 +213,15 @@ class EngineManager:
         if self._thread is not None:
             self._queue.put(None)
             self._thread = None
+        # Terminate the JVM so that embedding processes (pytest, short-lived
+        # scripts) exit promptly — JPype leaves non-daemon threads behind.
+        try:
+            import jpype
+
+            if jpype.isJVMStarted():
+                jpype.shutdownJVM()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _invalidate_caches(self) -> None:
         self._decompiler = None
@@ -243,7 +255,7 @@ class EngineManager:
             "compiler": str(program.getCompilerSpec().getCompilerSpecID()),
             "image_base": _hex(program.getImageBase().getOffset()),
             "size": int(mem.getNumAddresses()),
-            "function_count": program.getFunctionManager().getFunctionCount(),
+            "function_count": len(self._funcs()),
         }
 
     # ---------------------------------------------------------------- queries
@@ -329,6 +341,65 @@ class EngineManager:
             return {"addr": addr, "name": f.getName(), "code": str(code)}
 
         return self.submit(job, timeout=180)
+
+    def callgraph(self, addr: int, depth: int = 2, max_nodes: int = 250) -> dict[str, Any]:
+        """Call-graph neighborhood around the function at addr (BFS both directions)."""
+
+        def job():
+            program = self._require_program()
+            fm = program.getFunctionManager()
+            a = self._to_addr(addr)
+            start = fm.getFunctionAt(a) or fm.getFunctionContaining(a)
+            if start is None:
+                raise EngineError(f"no function at {_hex(addr)}")
+            monitor = _monitor()
+
+            center = int(start.getEntryPoint().getOffset())
+            nodes = {center: start.getName()}
+            edges: set[tuple[int, int]] = set()
+            frontier: list[tuple[Any, int]] = [(start, 0)]
+
+            while frontier and len(nodes) < max_nodes:
+                f, d = frontier.pop(0)
+                if d >= depth:
+                    continue
+                fa = int(f.getEntryPoint().getOffset())
+                try:
+                    callees = f.getCalledFunctions(monitor)
+                except Exception:  # noqa: BLE001
+                    callees = []
+                for callee in callees:
+                    try:
+                        ca = int(callee.getEntryPoint().getOffset())
+                    except Exception:  # noqa: BLE001
+                        continue
+                    edges.add((fa, ca))
+                    if ca not in nodes:
+                        nodes[ca] = callee.getName()
+                        if len(nodes) < max_nodes:
+                            frontier.append((callee, d + 1))
+                try:
+                    callers = f.getCallingFunctions(monitor)
+                except Exception:  # noqa: BLE001
+                    callers = []
+                for caller in callers:
+                    try:
+                        pa = int(caller.getEntryPoint().getOffset())
+                    except Exception:  # noqa: BLE001
+                        continue
+                    edges.add((pa, fa))
+                    if pa not in nodes:
+                        nodes[pa] = caller.getName()
+                        if len(nodes) < max_nodes:
+                            frontier.append((caller, d + 1))
+
+            return {
+                "center": center,
+                "nodes": [{"addr": a2, "name": n} for a2, n in nodes.items()],
+                "edges": [list(e) for e in sorted(edges)],
+            }
+
+        return self.submit(job, timeout=120)
 
     def decompile_many(
         self, addrs: list[int], progress: Callable[[int, int], None] | None = None
@@ -525,8 +596,8 @@ class EngineManager:
             if b.isInitialized() and size:
                 sample_len = min(size, 1 << 20)
                 try:
-                    raw = program.getMemory().getBytes(b.getStart(), sample_len)
-                    ent = shannon_entropy(bytes(x & 0xFF for x in raw))
+                    raw = _read_bytes(program.getMemory(), b.getStart(), sample_len)
+                    ent = shannon_entropy(raw)
                 except Exception:  # noqa: BLE001
                     ent = None
             out.append({
@@ -552,14 +623,13 @@ class EngineManager:
             block = mem.getBlock(block_name)
             if block is None:
                 raise EngineError(f"no memory block named {block_name!r}")
-            if length > (1 << 18):
-                length = 1 << 18
+            n = min(length, 1 << 18)
             start = block.getStart().add(offset)
             try:
-                raw = mem.getBytes(start, length)
+                raw = _read_bytes(mem, start, n)
             except Exception as e:  # noqa: BLE001
                 raise EngineError(f"read failed: {e}") from e
-            return bytes(b & 0xFF for b in raw)
+            return raw
 
         return self.submit(job, timeout=60)
 
@@ -619,10 +689,10 @@ class EngineManager:
                 if size == 0:
                     continue
                 try:
-                    raw = mem.getBytes(block.getStart(), min(size, 1 << 26))
+                    raw = _read_bytes(mem, block.getStart(), min(size, 1 << 26))
                 except Exception:  # noqa: BLE001
                     continue
-                data = bytes(b & 0xFF for b in raw)
+                data = raw
                 for hit in scan_bytes(data):
                     addr = block.getStart().add(hit.pop("offset"))
                     off = int(addr.getOffset())
@@ -641,6 +711,15 @@ class EngineManager:
 
 def _hex(offset: int) -> str:
     return f"0x{offset:x}"
+
+
+def _read_bytes(mem: Any, addr: Any, n: int) -> bytes:
+    """Read n bytes at addr via Ghidra's (Address, byte[]) overload."""
+    import jpype
+
+    buf = jpype.JArray(jpype.JByte)(n)
+    read = mem.getBytes(addr, buf)
+    return bytes(b & 0xFF for b in buf[: max(read, 0)])
 
 
 def _monitor() -> Any:
