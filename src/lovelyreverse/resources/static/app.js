@@ -40,6 +40,60 @@ function logLine(msg, cls = "") {
   v.scrollTop = v.scrollHeight;
 }
 
+/* theme-aware canvas colors: read once per draw from CSS custom props */
+function graphPalette() {
+  const cs = getComputedStyle(document.documentElement);
+  const g = (n) => cs.getPropertyValue(n).trim();
+  return {
+    bg: g("--graph-bg"), edge: g("--graph-edge"), edgeHi: g("--graph-edge-hi"),
+    text: g("--graph-text"), addr: g("--graph-addr"),
+    fill: g("--graph-node-fill"), fillHover: g("--graph-node-hover"),
+    stroke: g("--graph-node-stroke"), caller: g("--graph-caller"), callee: g("--graph-callee"),
+    rose: g("--rose"), cyan: g("--cyan"), amber: g("--amber"),
+    roseRgb: g("--rose-rgb"),
+  };
+}
+
+/* ── modals ── */
+function openModal(sel) { $(sel).classList.remove("hidden"); }
+function closeModal(sel) { $(sel).classList.add("hidden"); }
+
+let askResolve = null;
+function askText(title, initial) {
+  return new Promise((resolve) => {
+    askResolve = resolve;
+    $("#ask-title").textContent = title;
+    $("#ask-input").value = initial || "";
+    openModal("#modal-ask");
+    $("#ask-input").focus();
+    $("#ask-input").select();
+  });
+}
+function closeAsk(value) {
+  closeModal("#modal-ask");
+  if (askResolve) { const r = askResolve; askResolve = null; r(value); }
+}
+
+/* ── F3: one-click send to the decoder lab ── */
+function sendToDecoder(text, mode = "text") {
+  $("#dec-input").value = text;
+  const radio = document.querySelector(`input[name="dec-mode"][value="${mode}"]`);
+  if (radio) radio.checked = true;
+  $("#drawer").classList.remove("closed");
+  $("#drawer-toggle").textContent = t("drawer.hide");
+  $$("#drawer-tabs .tab").forEach((tb) => tb.classList.toggle("active", tb.dataset.tab === "decoder"));
+  $$("#drawer-body > .tabpane").forEach((p) => p.classList.toggle("active", p.dataset.pane === "decoder"));
+  toast(t("toast.sent"), "info", 1800);
+}
+
+function fmtSize(n) {
+  n = Number(n);
+  if (!Number.isFinite(n)) return "—";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(2) + " MB";
+}
+
 /* ═══════════════════════ global state ═══════════════════════ */
 
 const S = {
@@ -56,6 +110,7 @@ const S = {
   hexBlock: null,
   hexOffset: 0,
   hexChunk: 4096,
+  hexBytes: null,          // last-read chunk (F3: send to decoder)
   selectedString: null,
   ops: [],
 };
@@ -78,25 +133,26 @@ const activeTab = (barSel) => $(barSel + " .tab.active")?.dataset.tab;
 
 /* ═══════════════════════ engine status ═══════════════════════ */
 
-function engineState(mode, label) {
+function engineState(mode) {
   const dot = $("#engine-dot");
   dot.className = `engine-dot ${mode}`;
-  dot.querySelector(".dot-label").textContent = label;
+  dot.querySelector(".dot-label").textContent =
+    t(mode === "busy" ? "engine.analyzing" : mode === "ready" ? "engine.ready" : mode === "error" ? "engine.error" : "engine.idle");
   const st = $("#st-engine");
-  st.textContent = `● engine ${label}`;
+  st.textContent = t(mode === "busy" ? "engine.st.analyzing" : mode === "ready" ? "engine.st.ready" : mode === "error" ? "engine.st.error" : "engine.st.idle");
   st.className = mode;
 }
 
-function setBusy(b, label = "working") {
-  engineState(b ? "busy" : (S.program ? "ready" : "idle"), b ? label : (S.program ? "ready" : "idle"));
-  $("#st-job").textContent = b ? label : "";
+function setBusy(b, jobLabel = "") {
+  engineState(b ? "busy" : (S.program ? "ready" : "idle"));
+  $("#st-job").textContent = b ? jobLabel : "";
 }
 
 /* ═══════════════════════ opening binaries ═══════════════════════ */
 
 async function openByPath(path) {
   if (!path) return;
-  setBusy(true, "opening");
+  setBusy(true, t("job.opening"));
   logLine(`open ${path}`, "hi");
   try {
     const { job } = await api("open", {
@@ -105,12 +161,12 @@ async function openByPath(path) {
       body: JSON.stringify({ path }),
     });
     await pollJob(job, (j) => {
-      $("#st-job").textContent = j.progress || "opening";
+      $("#st-job").textContent = j.progress || t("job.opening");
     });
-    logLine("analysis complete", "ok");
+    logLine(t("log.analysis_done"), "ok");
     await loadProgram();
   } catch (e) {
-    toast(`open failed: ${e.message}`, "error");
+    toast(t("toast.open_fail", { err: e.message }), "error");
     logLine(`open failed: ${e.message}`, "err");
   } finally {
     setBusy(false);
@@ -118,7 +174,7 @@ async function openByPath(path) {
 }
 
 async function uploadAndOpen(file) {
-  setBusy(true, "uploading");
+  setBusy(true, t("job.uploading"));
   logLine(`upload ${file.name} (${file.size} bytes)`, "hi");
   try {
     const buf = await file.arrayBuffer();
@@ -158,21 +214,44 @@ function pollJob(id, onTick) {
 async function loadProgram() {
   S.program = await api("program");
   S.triage = await api("triage");
+  // B6: a fresh program must not inherit the previous one's panels
+  S.currentFunc = null;
+  S.selectedString = null;
+  S.ops = [];
+  renderOps();
   $("#hero").classList.add("hidden");
   $("#st-program").textContent = S.program.name;
-  engineState("ready", "ready");
-  renderProgramInfo();
-  renderSections();
-  renderOverlay();
+  engineState("ready");
+  $("#decompile-title").textContent = t("decompile.title.none");
+  $("#code-decompile").innerHTML = `<div class="code-empty">${esc(t("code.empty.dec"))}</div>`;
+  $("#disasm-title").textContent = t("code.title.none");
+  $("#code-disasm").innerHTML = `<div class="code-empty">${esc(t("disasm.empty"))}</div>`;
+  for (const id of ["btn-copy-code", "btn-download-code", "btn-rename-fn", "btn-note-fn"])
+    $(`#${id}`).classList.add("hidden");
+  $("#xrefs-target").textContent = "—";
+  $("#xrefs-info").innerHTML = `<div class="insp-empty">${esc(t("insp.select"))}</div>`;
+  $("#graph-info").textContent = t("graph.info.none");
+  $("#graph-stats").textContent = "";
+  G.rawNodes = new Map(); G.rawEdges = new Set();
+  G.nodes = []; G.edges = []; G.byId = new Map();
+  G.center = 0; G.selected = null; G.hover = null;
+  pokeGraph();
   S.functionsLoaded = 0; S.funcMap.clear();
   $("#list-functions").innerHTML = "";
   $("#count-functions").textContent = "";
+  $("#st-fn").textContent = "";
+  $("#list-strings").innerHTML = "";
+  $("#count-strings").textContent = "";
+  $("#st-str").textContent = "";
+  renderProgramInfo();
+  renderSections();
+  renderOverlay();
   await loadFunctions(false);
   loadStrings();
   loadImportsExports();
   loadBlocks();
   loadConstants();
-  toast(`${S.program.name} — ${S.program.function_count} functions analyzed`, "info");
+  toast(t("toast.analyzed", { name: S.program.name, n: S.program.function_count }), "info");
 }
 
 /* ═══════════════════════ left: functions ═══════════════════════ */
@@ -181,18 +260,18 @@ const PAGE = 400;
 
 async function loadFunctions(append) {
   const list = $("#list-functions");
-  if (!append) { S.functionsLoaded = 0; list.innerHTML = `<div class="loading">analyzing functions</div>`; }
+  if (!append) { S.functionsLoaded = 0; list.innerHTML = `<div class="loading">${esc(t("list.loading.fn"))}</div>`; }
   const offset = S.functionsLoaded;
   try {
     const data = await api(`functions?q=${encodeURIComponent(S.functionsQuery)}&offset=${offset}&limit=${PAGE}`);
     if (!append) list.innerHTML = "";
     S.functionsTotal = data.total;
     $("#count-functions").textContent = data.total;
-    $("#st-fn").textContent = `${data.total} fn`;
+    $("#st-fn").textContent = t("st.fn", { n: data.total });
     for (const f of data.items) addFuncRow(list, f);
     S.functionsLoaded += data.items.length;
     if (!data.items.length && !append)
-      list.innerHTML = `<div class="code-empty">no functions match</div>`;
+      list.innerHTML = `<div class="code-empty">${esc(t("list.no_match"))}</div>`;
   } catch (e) {
     if (!append) list.innerHTML = `<div class="code-empty">${esc(e.message)}</div>`;
   }
@@ -202,6 +281,7 @@ function addFuncRow(list, f) {
   S.funcMap.set(f.name, f.addr);
   const row = document.createElement("div");
   row.className = "row";
+  row.tabIndex = 0;
   row.dataset.addr = f.addr;
   row.innerHTML = `<span class="addr">${hexpad(f.addr)}</span><span class="name">${esc(f.name)}</span><span class="meta">${f.size}</span>`;
   row.onclick = () => selectFunction(f.addr, f.name);
@@ -213,19 +293,66 @@ async function selectFunction(addr, name, opts = {}) {
   $$("#list-functions .row").forEach((r) =>
     r.classList.toggle("active", Number(r.dataset.addr) === addr));
   $("#decompile-title").innerHTML = `<b>${esc(name)}</b> · ${hexpad(addr)}`;
-  $("#btn-copy-code").classList.remove("hidden");
-  $("#btn-download-code").classList.remove("hidden");
+  for (const id of ["btn-copy-code", "btn-download-code", "btn-rename-fn", "btn-note-fn"])
+    $(`#${id}`).classList.remove("hidden");
   const code = $("#code-decompile");
-  code.innerHTML = `<div class="loading">decompiling ${esc(name)}</div>`;
+  code.innerHTML = `<div class="loading">${esc(t("dec.decompiling", { name }))}</div>`;
   try {
     const res = await api(`function/${addr}/decompile`);
     renderCode(res.code);
     if (activeTab("#center-tabs") !== "decompile" && !opts.keepTab && activeTab("#center-tabs") !== "graph")
       switchCenter("decompile");
   } catch (e) {
-    code.innerHTML = `<div class="code-empty">decompile failed: ${esc(e.message)}</div>`;
+    code.innerHTML = `<div class="code-empty">${esc(t("dec.fail", { err: e.message }))}</div>`;
   }
   loadXrefs(addr);
+}
+
+/* F1: rename / note the current function */
+async function renameCurrentFn() {
+  if (!S.currentFunc) { toast(t("toast.select_fn"), "info"); return; }
+  const { addr, name } = S.currentFunc;
+  const next = await askText(t("rename.prompt", { old: name }), name);
+  if (next == null) return;
+  const clean = next.trim();
+  if (!clean || clean === name) return;
+  try {
+    await api(`function/${addr}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: clean }),
+    });
+    S.funcMap.delete(name);
+    S.funcMap.set(clean, addr);
+    S.currentFunc = { addr, name: clean };
+    $("#decompile-title").innerHTML = `<b>${esc(clean)}</b> · ${hexpad(addr)}`;
+    const row = $(`#list-functions .row[data-addr="${addr}"] .name`);
+    if (row) row.textContent = clean;
+    if (G.rawNodes.has(addr)) { G.rawNodes.set(addr, clean); layoutGraph(); pokeGraph(); }
+    toast(t("toast.renamed", { name: clean }), "ok");
+    logLine(`rename ${hexpad(addr)}: ${name} → ${clean}`, "hi");
+  } catch (e) { toast(e.message, "error"); }
+}
+
+async function noteCurrentFn() {
+  if (!S.currentFunc) { toast(t("toast.select_fn"), "info"); return; }
+  const { addr, name } = S.currentFunc;
+  let cur = "";
+  try {
+    const r = await api(`function/${addr}/comment`);
+    cur = r.comment || "";
+  } catch { /* first note */ }
+  const text = await askText(t("note.prompt", { name }), cur);
+  if (text == null) return;
+  try {
+    await api(`function/${addr}/comment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    toast(t("toast.note"), "ok");
+    logLine(`note ${hexpad(addr)}: ${text ? text.slice(0, 60) : "(cleared)"}`, "hi");
+  } catch (e) { toast(e.message, "error"); }
 }
 
 function switchCenter(tab) {
@@ -262,13 +389,14 @@ function highlightC(code) {
     else if (hexnum) out += `<span class="n">${esc(hexnum)}</span>`;
     else if (ghsym) {
       const addr = addrFromSym(ghsym);
-      out += `<span class="a" data-addr="${addr ?? ""}" data-name="${esc(ghsym)}">${esc(ghsym)}</span>`;
+      // B1: data-addr carries HEX digits everywhere; readers use parseInt(…, 16)
+      out += `<span class="a" data-addr="${addr != null ? addr.toString(16) : ""}" data-name="${esc(ghsym)}">${esc(ghsym)}</span>`;
     }
     else if (kw) out += `<span class="k">${esc(kw)}</span>`;
     else if (dec) out += `<span class="n">${esc(dec)}</span>`;
     else if (call) {
       const known = S.funcMap.get(call);
-      out += `<span class="f${known != null ? " a" : ""}"${known != null ? ` data-addr="${known}" data-name="${esc(call)}"` : ""}>${esc(call)}</span>`;
+      out += `<span class="f${known != null ? " a" : ""}"${known != null ? ` data-addr="${known.toString(16)}" data-name="${esc(call)}"` : ""}>${esc(call)}</span>`;
     }
     last = m.index + tok.length;
   }
@@ -305,7 +433,7 @@ function navigateAddr(addr, name) {
 async function showDisasm(addr, alsoSelect) {
   switchCenter("disasm");
   const box = $("#code-disasm");
-  $("#disasm-title").textContent = `…loading ${hexpad(addr)}`;
+  $("#disasm-title").textContent = `${hexpad(addr)} …`;
   try {
     const res = await api(`function/${addr}/disasm`);
     $("#disasm-title").innerHTML = `<b>${esc(res.function || "?")}</b> · ${hexpad(res.function_addr ?? addr)}`;
@@ -316,9 +444,9 @@ async function showDisasm(addr, alsoSelect) {
       const ref = ins.refs && ins.refs.length ? ins.refs[0] : null;
       const alreadyShown = ref != null && ins.text.toLowerCase().includes(ref.toString(16));
       const target = ref != null && !alreadyShown
-        ? ` <span class="disasm-target" data-addr="${ref}">${hexpad(ref)}</span>`
+        ? ` <span class="disasm-target" data-addr="${ref.toString(16)}">${hexpad(ref)}</span>`
         : "";
-      return `<div class="disasm-row" data-addr="${ins.addr}">
+      return `<div class="disasm-row" data-addr="${ins.addr.toString(16)}">
         <span class="disasm-addr">${hexpad(ins.addr)}</span>
         <span class="disasm-bytes">${esc(ins.bytes)}</span>
         <span class="disasm-text"><span class="disasm-mnemonic">${esc(mn)}</span>${esc(rest)}${target}</span>
@@ -332,7 +460,7 @@ async function showDisasm(addr, alsoSelect) {
         else showDisasm(a);
       });
     // mark current row
-    const cur = box.querySelector(`.disasm-row[data-addr="${addr}"]`);
+    const cur = box.querySelector(`.disasm-row[data-addr="${addr.toString(16)}"]`);
     if (cur) cur.classList.add("cur"), cur.scrollIntoView({ block: "center" });
     if (alsoSelect && res.function_addr != null) {
       S.currentFunc = { addr: res.function_addr, name: res.function };
@@ -347,18 +475,24 @@ async function showDisasm(addr, alsoSelect) {
 
 async function loadStrings(append = false) {
   const list = $("#list-strings");
-  if (!append) list.innerHTML = `<div class="loading">collecting strings</div>`;
+  if (!append) list.innerHTML = `<div class="loading">${esc(t("list.loading.str"))}</div>`;
   try {
     const data = await api(`strings?q=${encodeURIComponent(S.stringsQuery)}&limit=400`);
     if (!append) list.innerHTML = "";
     $("#count-strings").textContent = data.total;
-    $("#st-str").textContent = `${data.total} strings`;
-    if (!data.items.length) { list.innerHTML = `<div class="code-empty">no strings match</div>`; return; }
+    $("#st-str").textContent = t("st.strings", { n: data.total });
+    if (!data.items.length) { list.innerHTML = `<div class="code-empty">${esc(t("list.no_match"))}</div>`; return; }
     for (const s of data.items) {
       const row = document.createElement("div");
       row.className = "row";
-      row.innerHTML = `<span class="addr">${hexpad(s.addr)}</span><span class="val"><span class="lit">${esc(s.value)}</span></span><span class="meta">${s.length}</span>`;
-      row.onclick = () => { S.selectedString = s.value; loadXrefs(s.addr); toast("string loaded into decoder lab", "info", 2200); };
+      row.tabIndex = 0;
+      row.innerHTML = `<span class="addr">${hexpad(s.addr)}</span><span class="val"><span class="lit">${esc(s.value)}</span></span><span class="meta">${s.length}</span><button class="row-btn" title="${esc(t("hex.send.title"))}">⚗</button>`;
+      row.onclick = () => { S.selectedString = s.value; loadXrefs(s.addr); };
+      row.querySelector(".row-btn").onclick = (e) => {
+        e.stopPropagation();
+        S.selectedString = s.value;
+        sendToDecoder(s.value, "text");
+      };
       list.appendChild(row);
     }
   } catch (e) { if (!append) list.innerHTML = `<div class="code-empty">${esc(e.message)}</div>`; }
@@ -367,14 +501,15 @@ async function loadStrings(append = false) {
 async function loadImportsExports() {
   for (const [which, sel] of [["imports", "#list-imports"], ["exports", "#list-exports"]]) {
     const list = $(sel);
-    list.innerHTML = `<div class="loading">reading ${which}</div>`;
+    list.innerHTML = `<div class="loading">…</div>`;
     try {
       const data = await api(which);
       list.innerHTML = "";
-      if (!data.items.length) { list.innerHTML = `<div class="code-empty">none</div>`; continue; }
+      if (!data.items.length) { list.innerHTML = `<div class="code-empty">${esc(t("list.none"))}</div>`; continue; }
       for (const it of data.items) {
         const row = document.createElement("div");
         row.className = "row";
+        row.tabIndex = 0;
         row.innerHTML = which === "imports"
           ? `<span class="name">${esc(it.name)}</span><span class="meta">${esc(it.library || "")}</span>`
           : `<span class="addr">${hexpad(it.addr)}</span><span class="name">${esc(it.name)}</span>`;
@@ -389,62 +524,67 @@ async function loadImportsExports() {
 function renderProgramInfo() {
   const p = S.program;
   $("#program-info").innerHTML = `<dl class="kv">
-    <dt>name</dt><dd class="long">${esc(p.name)}</dd>
-    <dt>format</dt><dd>${esc(p.format)}</dd>
-    <dt>arch</dt><dd>${esc(p.language_id)}</dd>
-    <dt>compiler</dt><dd>${esc(p.compiler)}</dd>
-    <dt>base</dt><dd class="mono-addr">${hexpad(parseInt(p.image_base, 16))}</dd>
-    <dt>size</dt><dd>${Number(p.size).toLocaleString()}</dd>
-    <dt>functions</dt><dd>${p.function_count}</dd>
+    <dt>${esc(t("label.name"))}</dt><dd class="long">${esc(p.name)}</dd>
+    <dt>${esc(t("label.format"))}</dt><dd>${esc(p.format)}</dd>
+    <dt>${esc(t("label.language"))}</dt><dd>${esc(p.language_id)}</dd>
+    <dt>${esc(t("label.compiler"))}</dt><dd>${esc(p.compiler)}</dd>
+    <dt>${esc(t("label.base"))}</dt><dd class="mono-addr">${hexpad(parseInt(p.image_base, 16))}</dd>
+    <dt>${esc(t("label.size"))}</dt><dd>${Number(p.size).toLocaleString()}</dd>
+    <dt>${esc(t("label.functions"))}</dt><dd>${p.function_count}</dd>
   </dl>`;
 }
 
 function renderSections() {
   const box = $("#sections-info");
   const secs = S.triage.sections || [];
-  if (!secs.length) { box.innerHTML = `<div class="insp-empty">no section table</div>`; return; }
+  if (!secs.length) { box.innerHTML = `<div class="insp-empty">${esc(t("list.none"))}</div>`; return; }
   box.innerHTML = secs.map((s) => {
     const ent = s.entropy != null ? s.entropy.toFixed(2) : "—";
     const w = s.entropy != null ? Math.min(100, s.entropy / 8 * 100) : 0;
-    const packed = s.entropy > 7.2 ? ` <span style="color:var(--rose)">· likely packed</span>` : "";
+    const packed = s.entropy > 7.2 ? ` <span style="color:var(--rose)">· ${esc(t("sec.packed"))}</span>` : "";
+    // B4: malformed section tables must not print NaN
+    const sz = Number(s.raw_size ?? s.size);
+    const off = s.raw_offset ?? s.offset;
+    const szText = Number.isFinite(sz) && sz >= 0 ? sz.toLocaleString() : "—";
+    const offText = off != null && Number.isFinite(Number(off)) ? hexa(Number(off)) : "—";
     return `<div class="sec-row">
       <div class="sec-line1"><span class="sec-name">${esc(s.name)}</span><span class="sec-ent">H=${ent}${packed}</span></div>
       <div class="sec-bar"><i style="width:${w}%"></i></div>
-      <div class="sec-meta">${Number(s.raw_size || s.size).toLocaleString()} bytes @ ${hexa(s.raw_offset ?? s.offset)}</div>
+      <div class="sec-meta">${szText} B @ ${offText}</div>
     </div>`;
   }).join("");
 }
 
 function renderOverlay() {
   const box = $("#overlay-info");
-  const t = S.triage;
-  if (t.overlay_present) {
+  const tri = S.triage;
+  if (tri.overlay_present) {
     box.innerHTML = `<div class="overlay-box">
-      <div class="overlay-title">⚠ appended data detected</div>
-      <div class="sec-meta">${t.overlay_size.toLocaleString()} bytes after last section, starting at ${hexa(t.overlay_offset)}</div>
-      <div class="sec-meta">binwalk-style magic scan lives in the search tab · view it in memory hex or carve it out manually</div>
+      <div class="overlay-title">${esc(t("ov.detected"))}</div>
+      <div class="sec-meta">${t("ov.size")}: ${Number(tri.overlay_size).toLocaleString()} B · ${t("ov.offset")}: ${hexa(tri.overlay_offset)}</div>
+      <div class="sec-meta">${esc(t("ov.hint"))}</div>
     </div>`;
   } else {
-    box.innerHTML = `<div class="overlay-box clean"><div class="overlay-title clean">✓ nothing appended</div></div>`;
+    box.innerHTML = `<div class="overlay-box clean"><div class="overlay-title clean">${esc(t("ov.clean"))}</div></div>`;
   }
 }
 
 async function loadXrefs(addr) {
   $("#xrefs-target").textContent = hexa(addr);
   const box = $("#xrefs-info");
-  box.innerHTML = `<div class="loading">tracing refs</div>`;
+  box.innerHTML = `<div class="loading">${esc(t("list.loading.refs"))}</div>`;
   try {
     const res = await api(`function/${addr}/xrefs`);
     let html = "";
     if (res.to.length) {
-      html += `<div class="xref-label">referenced by (${res.to.length})</div>`;
+      html += `<div class="xref-label">${esc(t("xrefs.to"))} (${res.to.length})</div>`;
       html += res.to.slice(0, 40).map((r) =>
-        `<div class="xref-row" data-addr="${r.addr}"><span class="xref-type">${esc(r.type)}</span><span class="xref-addr">${hexpad(r.addr)}</span><span class="xref-name">${esc(r.function || "")}</span></div>`).join("");
-    } else html += `<div class="insp-empty">nothing references this</div>`;
+        `<div class="xref-row" tabindex="0" data-addr="${Number(r.addr).toString(16)}"><span class="xref-type">${esc(r.type)}</span><span class="xref-addr">${hexpad(r.addr)}</span><span class="xref-name">${esc(r.function || "")}</span></div>`).join("");
+    } else html += `<div class="insp-empty">${esc(t("xrefs.none"))}</div>`;
     if (res.from.length) {
-      html += `<div class="xref-label">references out (${res.from.length})</div>`;
+      html += `<div class="xref-label">${esc(t("xrefs.from"))} (${res.from.length})</div>`;
       html += res.from.slice(0, 40).map((r) =>
-        `<div class="xref-row" data-addr="${r.to}"><span class="xref-type">${esc(r.type)}</span><span class="xref-addr">${hexpad(r.to)}</span></div>`).join("");
+        `<div class="xref-row" tabindex="0" data-addr="${Number(r.to).toString(16)}"><span class="xref-type">${esc(r.type)}</span><span class="xref-addr">${hexpad(r.to)}</span></div>`).join("");
     }
     box.innerHTML = html;
     box.querySelectorAll(".xref-row").forEach((row) =>
@@ -459,23 +599,23 @@ async function loadXrefs(addr) {
 
 async function loadConstants() {
   const box = $("#constants-info");
-  box.innerHTML = `<div class="loading">scanning crypto constants</div>`;
+  box.innerHTML = `<div class="loading">${esc(t("list.loading.const"))}</div>`;
   try {
     const res = await api("constants");
     $("#count-constants").textContent = res.items.length;
     if (!res.items.length) {
-      box.innerHTML = `<div class="insp-empty">no known crypto constants — nothing standard here (or it's custom 🌹)</div>`;
+      box.innerHTML = `<div class="insp-empty">${esc(t("const.none"))}</div>`;
       return;
     }
     box.innerHTML = res.items.map((h) =>
-      `<div class="xref-row" data-addr="${h.addr}" title="${esc(h.note)}">
-        <span class="xref-type">${hexa(h.addr).slice(2, 10)}</span>
+      `<div class="xref-row" tabindex="0" data-addr="${Number(h.addr).toString(16)}" title="${esc(h.note || "")}">
+        <span class="xref-addr">${hexpad(h.addr)}</span>
         <span class="xref-name">${esc(h.name)}</span>
         <span class="chip c-${h.category === "hash" ? "hash" : h.category === "ecc" ? "ecc" : h.category === "encoding" ? "encoding" : "crypto"}">${esc(h.function || h.block || "")}</span>
       </div>`).join("");
     box.querySelectorAll(".xref-row").forEach((row) =>
       row.onclick = () => showDisasm(parseInt(row.dataset.addr, 16)));
-    toast(`${res.items.length} crypto constant hits — check the inspector`, "info");
+    toast(t("const.hits", { n: res.items.length }), "info");
   } catch (e) { box.innerHTML = `<div class="insp-empty">${esc(e.message)}</div>`; }
 }
 
@@ -496,11 +636,12 @@ async function loadBlocks() {
 
 async function readHex() {
   const box = $("#code-hex");
-  if (!S.hexBlock) { box.innerHTML = `<div class="code-empty">no memory blocks</div>`; return; }
-  box.innerHTML = `<div class="loading">reading memory</div>`;
+  if (!S.hexBlock) { box.innerHTML = `<div class="code-empty">${esc(t("hex.empty"))}</div>`; return; }
+  box.innerHTML = `<div class="loading">${esc(t("list.loading.mem"))}</div>`;
   try {
     const res = await api(`memory/read?block=${encodeURIComponent(S.hexBlock)}&offset=${S.hexOffset}&len=${S.hexChunk}`);
     const bytes = b64ToBytes(res.data_b64);
+    S.hexBytes = bytes;   // F3: keep for "send to decoder"
     $("#hex-info").textContent = `${S.hexBlock} @ +${S.hexOffset}`;
     let html = "";
     for (let i = 0; i < bytes.length; i += 16) {
@@ -556,7 +697,7 @@ function renderOpSelect() {
 
 function renderOps() {
   const list = $("#op-list");
-  if (!S.ops.length) { list.innerHTML = `<div class="insp-empty">no ops — result passes through unchanged</div>`; return; }
+  if (!S.ops.length) { list.innerHTML = `<div class="insp-empty">${esc(t("dec.noops"))}</div>`; return; }
   list.innerHTML = S.ops.map((o, i) => {
     const spec = OPS.find((s) => s.op === o.op);
     const args = spec.args.map(([name, type, def]) => {
@@ -636,12 +777,12 @@ async function xorBrute() {
     box.classList.add("show");
     box.innerHTML = res.items.length
       ? res.items.map((r) =>
-          `<div class="xor-row" data-key="${r.key}"><span class="xor-key">${r.key_hex}</span><span class="xor-score">${r.score}</span><span class="xor-preview">${esc(r.preview)}</span></div>`).join("")
-      : `<div class="insp-empty">no single-byte key produced readable text — try the derive tool</div>`;
+          `<div class="xor-row" tabindex="0" data-key="${r.key}"><span class="xor-key">${esc(r.key_hex)}</span><span class="xor-score">${r.score}</span><span class="xor-preview">${esc(r.preview)}</span></div>`).join("")
+      : `<div class="insp-empty">${esc(t("xor.none.brute"))}</div>`;
     box.querySelectorAll(".xor-row").forEach((row) =>
       row.onclick = () => {
-        const key = row.dataset.key;
-        S.ops = [{ op: "xor", args: { key: key.toString(16).padStart(2, "0") } }];
+        // dataset carries the decimal key; feed the xor op its hex form (B5 radix)
+        S.ops = [{ op: "xor", args: { key: Number(row.dataset.key).toString(16), hex: true } }];
         renderOps(); runChain();
       });
   } catch (e) { toast(e.message, "error"); }
@@ -649,7 +790,7 @@ async function xorBrute() {
 
 async function xorDerive() {
   const prefix = $("#dec-prefix").value;
-  if (!prefix) { toast("enter a known prefix first (e.g. flag{)", "info"); return; }
+  if (!prefix) { toast(t("toast.prefix"), "info"); return; }
   const input = decInputBytes();
   const box = $("#xor-results");
   try {
@@ -660,11 +801,13 @@ async function xorDerive() {
     box.classList.add("show");
     box.innerHTML = res.items.length
       ? res.items.map((r) =>
-          `<div class="xor-row" data-key="${r.key_bytes}"><span class="xor-key">len ${r.length}</span><span class="xor-score">key</span><span class="xor-preview">${esc(r.key_display)}</span></div>`).join("")
-      : `<div class="insp-empty">no consistent key for that prefix</div>`;
-    box.querySelectorAll(".xor-row").forEach((row) =>
+          `<div class="xor-row" tabindex="0"><span class="xor-key">len ${r.length}</span><span class="xor-score">${r.key_ascii ? "ascii" : "hex"}</span><span class="xor-preview">${esc(r.key_display)}</span></div>`).join("")
+      : `<div class="insp-empty">${esc(t("xor.none.derive"))}</div>`;
+    box.querySelectorAll(".xor-row").forEach((row, i) =>
       row.onclick = () => {
-        S.ops = [{ op: "xor", args: { key: row.dataset.key } }];
+        const r = res.items[i];
+        // key_bytes is always the hex encoding; prefer the readable ascii form
+        S.ops = [{ op: "xor", args: r.key_ascii ? { key: r.key_ascii } : { key: r.key_bytes, hex: true } }];
         renderOps(); runChain();
       });
   } catch (e) { toast(e.message, "error"); }
@@ -676,16 +819,17 @@ async function runSearch() {
   const pat = $("#search-hex").value.trim();
   const box = $("#search-results");
   if (!pat) return;
-  box.innerHTML = `<div class="loading">searching memory</div>`;
+  box.innerHTML = `<div class="loading">${esc(t("list.loading.search"))}</div>`;
   $("#search-info").textContent = "";
   try {
     const res = await api(`search?hex=${encodeURIComponent(pat)}&limit=400`);
-    $("#search-info").textContent = `${res.items.length} hit(s)`;
-    if (!res.items.length) { box.innerHTML = `<div class="code-empty">no matches in initialized memory</div>`; return; }
+    $("#search-info").textContent = t("search.hits", { n: res.items.length });
+    if (!res.items.length) { box.innerHTML = `<div class="code-empty">${esc(t("search.nohits"))}</div>`; return; }
     box.innerHTML = "";
     for (const h of res.items) {
       const row = document.createElement("div");
       row.className = "row";
+      row.tabIndex = 0;
       row.innerHTML = `<span class="addr">${hexpad(h.addr)}</span><span class="name">${esc(h.block)}</span><span class="meta">${esc(h.function || "")}</span>`;
       row.onclick = () => showDisasm(h.addr);
       box.appendChild(row);
@@ -696,19 +840,19 @@ async function runSearch() {
 /* ═══════════════════════ decompile-all ═══════════════════════ */
 
 async function decompileAll() {
-  setBusy(true, "decompiling all");
-  logLine("batch decompile started", "hi");
+  setBusy(true, t("job.decompiling"));
+  logLine(t("log.batch"), "hi");
   try {
     const { job } = await api("export/decompile-all", { method: "POST" });
     await pollJob(job, (j) => {
-      $("#st-job").textContent = j.progress || "decompiling";
+      $("#st-job").textContent = j.progress || t("job.decompiling");
       if (j.log.length) logLine(j.log[j.log.length - 1]);
     });
-    toast("zip ready — download starting", "ok");
-    logLine("batch decompile done", "ok");
+    toast(t("toast.zip"), "ok");
+    logLine(t("log.batch_done"), "ok");
     window.location = `/api/download/decompile-all.zip?job=${job}`;
   } catch (e) {
-    toast(`batch failed: ${e.message}`, "error");
+    toast(t("log.batch_fail", { err: e.message }), "error");
     logLine(`batch failed: ${e.message}`, "err");
   } finally { setBusy(false); }
 }
@@ -754,7 +898,7 @@ function mergeGraphPiece(g) {
 
 async function showGraph(addr) {
   resetGraph(addr);
-  $("#graph-info").innerHTML = `building <b>${hexpad(addr)}</b>…`;
+  $("#graph-info").innerHTML = t("graph.building", { addr: hexpad(addr) });
   try {
     const depth = Number($("#graph-depth").value || 2);
     mergeGraphPiece(await api(`function/${addr}/callgraph?depth=${depth}&max=${GRAPH_MAX_NODES}`));
@@ -763,13 +907,13 @@ async function showGraph(addr) {
     updateGraphStats();
     pokeGraph();
   } catch (e) {
-    $("#graph-info").textContent = "graph failed: " + e.message;
+    $("#graph-info").textContent = t("graph.fail", { err: e.message });
   }
 }
 
 async function expandGraphNode(node) {
   if (G.rawNodes.size >= GRAPH_MAX_NODES) {
-    toast(`graph limit reached (${GRAPH_MAX_NODES} nodes)`, "info");
+    toast(t("toast.graph_limit", { n: GRAPH_MAX_NODES }), "info");
     return;
   }
   try {
@@ -777,7 +921,7 @@ async function expandGraphNode(node) {
     const beforeN = G.rawNodes.size, beforeE = G.rawEdges.size;
     mergeGraphPiece(g);
     if (G.rawNodes.size === beforeN && G.rawEdges.size === beforeE) {
-      toast("nothing new to expand here", "info", 1600);
+      toast(t("toast.no_new"), "info", 1600);
       return;
     }
     layoutGraph();
@@ -791,9 +935,8 @@ async function expandGraphNode(node) {
 }
 
 function updateGraphStats() {
-  $("#graph-info").innerHTML = `center <b>${hexpad(G.center)}</b>`;
-  $("#graph-stats").textContent =
-    `${G.rawNodes.size} nodes · ${G.rawEdges.size} edges · double-click a node to expand`;
+  $("#graph-info").innerHTML = `<b>${esc(t("graph.center_addr", { addr: hexpad(G.center) }))}</b>`;
+  $("#graph-stats").textContent = `${t("graph.stats", { n: G.rawNodes.size, m: G.rawEdges.size })} · ${t("graph.hint")}`;
 }
 
 /* ---------------- rank computation: callers negative, callees positive ---------------- */
@@ -1006,6 +1149,9 @@ function drawGraph() {
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
+  // theme-aware palette (task: light default + graphite&rose dark)
+  const P = graphPalette();
+  if (P.bg) c.style.background = P.bg;
   ctx.save();
   ctx.translate(G.tx, G.ty);
   ctx.scale(G.scale, G.scale);
@@ -1016,7 +1162,7 @@ function drawGraph() {
     const a = e.fromNode, b = e.toNode;
     if (!a || !b) continue;
     const lit = hot != null && (e.from === hot || e.to === hot);
-    ctx.strokeStyle = lit ? "rgba(255,93,143,.9)" : "rgba(128,118,146,.45)";
+    ctx.strokeStyle = lit ? P.edgeHi : P.edge;
     ctx.fillStyle = ctx.strokeStyle;
     ctx.lineWidth = lit ? 1.6 : 1.1;
 
@@ -1053,29 +1199,30 @@ function drawGraph() {
     const x = n.x - n.w / 2, y = n.y - n.h / 2;
 
     rrPath(ctx, x, y, n.w, n.h, 6);
-    ctx.fillStyle = isCenter ? "rgba(255,93,143,.15)"
-      : isHover ? "#262030" : "#1a1621";
+    ctx.fillStyle = isCenter
+      ? `rgba(${P.roseRgb || "255,93,143"},.13)`
+      : isHover ? P.fillHover : P.fill;
     ctx.fill();
-    ctx.strokeStyle = isCenter ? "#ff5d8f"
-      : isSel ? "#6fd3e8" : "#382f45";
+    ctx.strokeStyle = isCenter ? P.rose
+      : isSel ? P.cyan : P.stroke;
     ctx.lineWidth = isCenter || isSel ? 1.8 : 1;
     ctx.stroke();
 
     // left kind stripe
-    const stripe = n.kind === "caller" ? "#6fd3e8"
-      : n.kind === "callee" ? "#7dd99a"
-      : n.kind === "center" ? "#ff5d8f" : "#ffc26b";
+    const stripe = n.kind === "caller" ? P.caller
+      : n.kind === "callee" ? P.callee
+      : n.kind === "center" ? P.rose : P.amber;
     ctx.fillStyle = stripe;
     rrPath(ctx, x + 1.5, y + 1.5, 3.5, n.h - 3, 1.75);
     ctx.fill();
 
     ctx.textAlign = "left";
     ctx.font = "10px 'JetBrains Mono', Consolas, monospace";
-    ctx.fillStyle = "#8b8199";
+    ctx.fillStyle = P.addr;
     ctx.fillText(hexpad(n.addr), x + 13, y + 15);
 
     ctx.font = "12px 'JetBrains Mono', Consolas, monospace";
-    ctx.fillStyle = isCenter ? "#ffd7e4" : "#e9e3f0";
+    ctx.fillStyle = isCenter ? P.rose : P.text;
     ctx.fillText(clipText(ctx, n.name, n.w - 22), x + 13, y + 32);
   }
 
@@ -1197,6 +1344,8 @@ async function gotoInput() {
     $$("#left-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "functions"));
     $$("#left-body > .tabpane").forEach((p) => p.classList.toggle("active", p.dataset.pane === "functions"));
     await loadFunctions(false);
+    // B6: zero hits used to fail silently
+    if (!S.functionsTotal) toast(t("goto.none", { q: v }), "info");
   }
 }
 
@@ -1219,9 +1368,151 @@ function wireResizer(sel, cssVar, min, max) {
   window.addEventListener("mouseup", () => (dragging = false));
 }
 
+/* ═══════════════════════ F2: recent files ═══════════════════════ */
+
+async function toggleRecentMenu() {
+  const menu = $("#recent-menu");
+  if (!menu.classList.contains("hidden")) { menu.classList.add("hidden"); return; }
+  menu.innerHTML = `<div class="menu-empty">…</div>`;
+  menu.classList.remove("hidden");
+  try {
+    const { items } = await api("recent");
+    if (!items.length) { menu.innerHTML = `<div class="menu-empty">${esc(t("recent.none"))}</div>`; return; }
+    menu.innerHTML = items.map((it) =>
+      `<button class="menu-item" data-path="${esc(it.path)}">
+        <span class="mi-name">${esc(it.name)}</span>
+        <span class="mi-meta">${fmtSize(it.size)} · ${new Date(it.ts * 1000).toLocaleString()}</span>
+      </button>`).join("");
+    menu.querySelectorAll(".menu-item").forEach((b) =>
+      b.onclick = () => {
+        menu.classList.add("hidden");
+        $("#path-input").value = b.dataset.path;
+        openByPath(b.dataset.path);
+      });
+  } catch { menu.innerHTML = `<div class="menu-empty">—</div>`; }
+}
+
+/* ═══════════════════════ F5: PyInstaller unpack modal ═══════════════════════ */
+
+let unpackJob = null;      // job id of the running/finished unpack
+let unpackOutdir = "";     // server-side output dir (for "send to Ghidra")
+let unpackPreviewName = "";
+
+function looksBinary(bytes, name = "") {
+  if (/\.pyc$/i.test(name)) return true;
+  const n = Math.min(bytes.length, 800);
+  if (!n) return false;
+  let odd = 0;
+  for (let i = 0; i < n; i++) {
+    const b = bytes[i];
+    if (b === 0 || (b < 0x09) || (b > 0x0d && b < 0x20)) odd++;
+  }
+  return odd / n > 0.08;
+}
+
+async function openUnpackModal() {
+  openModal("#modal-unpack");
+  $("#unpack-ghidra").classList.add("hidden");
+  const meta = $("#unpack-meta"), list = $("#unpack-list"), prev = $("#unpack-preview");
+  meta.textContent = "…";
+  list.innerHTML = "";
+  prev.textContent = "";
+  try {
+    const { job } = await api("unpack/pyinstaller", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),   // server uses the currently open binary
+    });
+    unpackJob = job;
+    const j = await pollJob(job, (jj) => { meta.textContent = jj.progress || "…"; });
+    renderUnpackResult(j.result);
+  } catch (e) {
+    if (/NotPyInstaller|not a pyinstaller/i.test(e.message)) meta.textContent = t("unpack.notpy");
+    else meta.textContent = t("unpack.failed", { err: e.message });
+  }
+}
+
+function renderUnpackResult(m) {
+  if (!m || !m.outdir) { $("#unpack-meta").textContent = t("unpack.notpy"); return; }
+  unpackOutdir = m.outdir;
+  const bits = [m.pyinstaller || "PyInstaller", `Python ${m.python || "?"}`,
+    `${m.total} ${t("unpack.entries")}`];
+  if (m.pyz_modules) bits.push(`PYZ ${m.pyz_modules}`);
+  if (m.warnings && m.warnings.length) bits.push(`⚠ ${m.warnings.length}`);
+  $("#unpack-meta").textContent = bits.join(" · ");
+  const entries = (m.entries || []).slice()
+    .sort((a, b) => ((b.type === "s") - (a.type === "s")) || a.name.localeCompare(b.name));
+  $("#unpack-list").innerHTML = entries.map((en) =>
+    `<div class="row" tabindex="0" data-name="${esc(en.name)}">
+      <span class="addr">${en.type === "s" ? "★" : esc(en.type)}</span>
+      <span class="name">${esc(en.name)}</span>
+      <span class="meta">${fmtSize(en.size)}</span>
+    </div>`).join("");
+  $("#unpack-preview").textContent = t("unpack.pick");
+  $$("#unpack-list .row").forEach((row) =>
+    row.onclick = () => previewUnpackedFile(row.dataset.name));
+}
+
+async function previewUnpackedFile(name) {
+  unpackPreviewName = name;
+  const prev = $("#unpack-preview");
+  prev.textContent = "…";
+  try {
+    const res = await api(`unpack/file?job=${encodeURIComponent(unpackJob)}&name=${encodeURIComponent(name)}`);
+    const bytes = b64ToBytes(res.data_b64);
+    if (looksBinary(bytes, name)) {
+      prev.textContent = t("unpack.bin");
+      $("#unpack-ghidra").classList.remove("hidden");
+      return;
+    }
+    prev.textContent = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    $("#unpack-ghidra").classList.remove("hidden");
+  } catch (e) { prev.textContent = e.message; }
+}
+
+/* ═══════════════════════ F4: keyboard shortcuts ═══════════════════════ */
+
+function switchLeft(tab) {
+  $$("#left-tabs .tab").forEach((tb) => tb.classList.toggle("active", tb.dataset.tab === tab));
+  $$("#left-body > .tabpane").forEach((p) => p.classList.toggle("active", p.dataset.pane === tab));
+}
+
+function handleShortcut(e) {
+  // Esc closes the topmost surface, always
+  if (e.key === "Escape") {
+    const open = $$(".modal-backdrop:not(.hidden)");
+    if (open.length) {
+      open.forEach((m) => m.classList.add("hidden"));
+      if (askResolve) { const r = askResolve; askResolve = null; r(null); }
+    }
+    document.body.classList.remove("insp-open");
+    $("#recent-menu").classList.add("hidden");
+    return;
+  }
+  const tag = document.activeElement ? document.activeElement.tagName : "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "?") { openModal("#modal-keys"); return; }
+  if (e.key === "g") { $("#goto-input").focus(); $("#goto-input").select(); return; }
+  if (e.key === "/") { e.preventDefault(); switchLeft("functions"); $("#filter-functions").focus(); return; }
+  if (e.key >= "1" && e.key <= "4") { switchLeft(["functions", "strings", "imports", "exports"][Number(e.key) - 1]); return; }
+  if (e.key === "n") { renameCurrentFn(); return; }
+  if (e.key === "m") { noteCurrentFn(); return; }
+}
+
+/* B7: lists are clickable divs — give keyboard users the same affordance */
+function handleRowKeys(e) {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const row = e.target.closest(".row, .xref-row, .xor-row, .menu-item");
+  if (!row || row.tagName === "BUTTON" || row.tagName === "A") return;
+  e.preventDefault();
+  row.click();
+}
+
 /* ═══════════════════════ boot ═══════════════════════ */
 
 window.addEventListener("DOMContentLoaded", async () => {
+  applyI18n();
   renderOpSelect();
   wireTabs("#left-tabs", "#left-body");
   wireTabs("#center-tabs", "#center-body", (tab) => {
@@ -1242,19 +1533,98 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (S.currentFunc) {
       switchCenter("graph");
       showGraph(S.currentFunc.addr);
-    } else toast("select a function first", "info");
+    } else toast(t("toast.select_fn"), "info");
   };
 
-  // boot status
+  // ── modals (settings / ask / keys / unpack) ──
+  document.querySelectorAll(".modal-backdrop").forEach((m) => {
+    m.addEventListener("mousedown", (e) => {
+      if (e.target === m || e.target.closest("[data-close]")) {
+        m.classList.add("hidden");
+        if (m.id === "modal-ask" && askResolve) { const r = askResolve; askResolve = null; r(null); }
+      }
+    });
+  });
+  $("#btn-settings").onclick = () => {
+    $("#set-lang").value = LV_LANG;
+    $("#set-theme").value = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+    openModal("#modal-settings");
+  };
+  $("#set-lang").onchange = (e) => setLang(e.target.value);
+  $("#set-theme").onchange = (e) => {
+    const th = e.target.value === "dark" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", th);
+    try { localStorage.setItem("lv.theme", th); } catch { /* private mode */ }
+    pokeGraph();
+  };
+  $("#btn-keys").onclick = () => { closeModal("#modal-settings"); openModal("#modal-keys"); };
+  $("#ask-ok").onclick = () => closeAsk($("#ask-input").value);
+  $("#ask-clear").onclick = () => { $("#ask-input").value = ""; $("#ask-input").focus(); };
+  $("#ask-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") closeAsk($("#ask-input").value);
+  });
+
+  // F1: rename / note
+  $("#btn-rename-fn").onclick = renameCurrentFn;
+  $("#btn-note-fn").onclick = noteCurrentFn;
+
+  // F2: recent
+  $("#btn-recent").onclick = toggleRecentMenu;
+  document.addEventListener("mousedown", (e) => {
+    if (!e.target.closest(".recent-wrap")) $("#recent-menu").classList.add("hidden");
+  });
+
+  // F5: unpack
+  $("#btn-unpack").onclick = openUnpackModal;
+  $("#unpack-ghidra").onclick = () => {
+    if (unpackOutdir && unpackPreviewName) {
+      closeModal("#modal-unpack");
+      openByPath(unpackOutdir + "/" + unpackPreviewName);
+    }
+  };
+
+  // F6: narrow-screen inspector drawer
+  $("#btn-inspector").onclick = () => document.body.classList.toggle("insp-open");
+
+  // F4: shortcuts + B7 row keys
+  document.addEventListener("keydown", handleShortcut);
+  document.addEventListener("keydown", handleRowKeys);
+
+  // re-render translated dynamic text when the language flips
+  document.addEventListener("lv:langchange", () => {
+    if (S.program) {
+      renderProgramInfo();
+      renderSections();
+      renderOverlay();
+      loadConstants();
+    }
+    updateGraphStats();
+  });
+
+  // boot status (B2: show progress while auto-analysis is still running)
   try {
     const st = await api("status");
     $("#st-version").textContent = "lovelyreverse v" + st.version;
-    engineState("idle", "idle");
-    if (st.program_loaded) {
-      await loadProgram();  // server still holds a program (e.g. page refresh)
+    if (st.analyzing) {
+      engineState("busy");
+      $("#st-job").textContent = st.progress || t("engine.analyzing");
+      const timer = setInterval(async () => {
+        try {
+          const s2 = await api("status");
+          $("#st-job").textContent = s2.progress || t("engine.analyzing");
+          if (!s2.analyzing) {
+            clearInterval(timer);
+            $("#st-job").textContent = "";
+            await loadProgram();
+          }
+        } catch { clearInterval(timer); engineState("error"); }
+      }, 900);
+    } else {
+      engineState("idle");
+      if (st.program_loaded) await loadProgram();  // server still holds a program (e.g. page refresh)
     }
   } catch (e) {
-    engineState("error", "unreachable");
+    engineState("error");
   }
 
   // open binary — three ways
@@ -1297,7 +1667,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // center actions
   $("#btn-copy-code").onclick = () => {
-    navigator.clipboard.writeText($("#code-decompile").innerText).then(() => toast("pseudocode copied", "ok", 1800));
+    navigator.clipboard.writeText($("#code-decompile").innerText).then(() => toast(t("toast.copied"), "ok", 1800));
   };
   $("#btn-download-code").onclick = () => {
     if (S.currentFunc) window.location = `/api/download/decompile/${S.currentFunc.addr}.c`;
@@ -1314,6 +1684,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     S.hexOffset = v.startsWith("0x") ? parseInt(v, 16) : parseInt(v, 10) || 0;
     readHex();
   };
+  $("#hex-send").onclick = () => {
+    if (!S.hexBytes || !S.hexBytes.length) { toast(t("hex.empty"), "info"); return; }
+    const hexText = [...S.hexBytes].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    sendToDecoder(hexText, "hex");
+  };
 
   // decoder lab
   $("#btn-op-add").onclick = () => {
@@ -1329,12 +1704,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (out) runChain();
   };
   $("#btn-dec-copy").onclick = () => {
-    navigator.clipboard.writeText($("#dec-output").value).then(() => toast("copied", "ok", 1500));
+    navigator.clipboard.writeText($("#dec-output").value).then(() => toast(t("toast.copied"), "ok", 1500));
   };
   $("#btn-dec-paste-string").onclick = () => {
-    if (S.selectedString == null) { toast("click a string in the sidebar first", "info"); return; }
-    $("#dec-input").value = S.selectedString;
-    document.querySelector('input[name="dec-mode"][value="text"]').checked = true;
+    if (S.selectedString == null) { toast(t("toast.no_string"), "info"); return; }
+    sendToDecoder(S.selectedString, "text");
   };
   $("#btn-xor-brute").onclick = xorBrute;
   $("#btn-xor-derive").onclick = xorDerive;
@@ -1347,8 +1721,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#drawer-toggle").onclick = () => {
     const d = $("#drawer");
     d.classList.toggle("closed");
-    $("#drawer-toggle").textContent = d.classList.contains("closed") ? "▴ panels" : "▾ hide";
+    $("#drawer-toggle").textContent = d.classList.contains("closed") ? t("drawer.show") : t("drawer.hide");
   };
 
-  logLine("lovelyreverse ready — open a binary to begin", "ok");
+  logLine(t("log.welcome"), "ok");
 });

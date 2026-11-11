@@ -1,10 +1,23 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lovelyreverse — hands-on RE workstation</title>
-<link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+<script>
+/* apply saved prefs before first paint to avoid FOUC */
+(function () {
+  try {
+    var th = localStorage.getItem("lv.theme") || "light";
+    var lg = localStorage.getItem("lv.lang") || "zh";
+    document.documentElement.setAttribute("data-theme", th);
+    document.documentElement.setAttribute("lang", lg === "en" ? "en" : "zh-CN");
+  } catch (e) { document.documentElement.setAttribute("data-theme", "light"); }
+})();
+</script>
+<link rel="icon" href="/static/favicon.ico" sizes="32x32">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,16 +25,25 @@
 <!-- ═══════════════════════ top bar ═══════════════════════ -->
 <header id="topbar">
   <div class="brand">
-    <span class="brand-mark">&lt;<span class="brand-heart">♥</span>/&gt;</span>
+    <img class="brand-icon" src="/static/favicon-32.png" alt="" draggable="false">
     <span class="brand-name">lovely<b>reverse</b></span>
-    <span class="brand-tag">hands-on RE workstation</span>
+    <span class="brand-tag" data-i18n="brand.tag">hands-on RE workstation</span>
   </div>
 
   <div class="top-actions">
-    <button id="btn-open" class="btn btn-primary" title="Open a local binary by path, or drop a file anywhere">⌖ Open binary</button>
-    <input id="path-input" type="text" spellcheck="false" placeholder="…or paste an absolute file path + Enter" />
-    <input id="goto-input" type="text" spellcheck="false" placeholder="goto  0x00401234 / name" />
-    <span id="engine-dot" class="engine-dot" title="engine status"><span class="dot"></span><span class="dot-label">idle</span></span>
+    <button id="btn-open" class="btn btn-primary" data-i18n="open.btn" data-i18n-title="open.btn.title">⌖ Open binary</button>
+    <input id="path-input" type="text" spellcheck="false" data-i18n-ph="path.ph" placeholder="…or paste an absolute file path + Enter" />
+    <input id="goto-input" type="text" spellcheck="false" data-i18n-ph="goto.ph" placeholder="goto  0x00401234 / name" />
+    <div class="recent-wrap">
+      <button id="btn-recent" class="btn btn-ghost" data-i18n="recent.btn" data-i18n-title="recent.title">recent</button>
+      <div id="recent-menu" class="menu hidden"></div>
+    </div>
+    <button id="btn-unpack" class="btn btn-ghost" data-i18n="unpack.short" data-i18n-title="unpack.btn.title">unpack</button>
+    <span id="engine-dot" class="engine-dot" title="engine status"><span class="dot"></span><span class="dot-label" data-i18n="engine.idle">idle</span></span>
+    <button id="btn-inspector" class="icon-btn only-narrow" title="inspector">◫</button>
+    <button id="btn-settings" class="icon-btn" data-i18n-title="settings.btn.title" aria-label="settings">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M19.14 12.94c.04-.31.06-.62.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.61.22L2.71 7.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.05.62-.05.94s.01.63.05.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.42.34.61.22l2.39-.96c.49.38 1.03.7 1.62.94l.36 2.54c.04.24.25.42.49.42h3.8c.24 0 .45-.18.49-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.19.12.47.02.61-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg>
+    </button>
   </div>
 </header>
 
@@ -33,19 +55,19 @@
   <!-- ─────────── left: listings ─────────── -->
   <section id="left" class="panel">
     <div class="tabbar" id="left-tabs">
-      <button class="tab active" data-tab="functions">functions <em id="count-functions"></em></button>
-      <button class="tab" data-tab="strings">strings <em id="count-strings"></em></button>
-      <button class="tab" data-tab="imports">imports</button>
-      <button class="tab" data-tab="exports">exports</button>
+      <button class="tab active" data-tab="functions"><span data-i18n="tab.functions">functions</span> <em id="count-functions"></em></button>
+      <button class="tab" data-tab="strings"><span data-i18n="tab.strings">strings</span> <em id="count-strings"></em></button>
+      <button class="tab" data-tab="imports" data-i18n="tab.imports">imports</button>
+      <button class="tab" data-tab="exports" data-i18n="tab.exports">exports</button>
     </div>
 
     <div class="tabbody" id="left-body">
       <div class="tabpane active" data-pane="functions">
-        <input class="filter" id="filter-functions" type="text" spellcheck="false" placeholder="⌕ filter functions…" />
+        <input class="filter" id="filter-functions" type="text" spellcheck="false" data-i18n-ph="filter.functions.ph" placeholder="⌕ filter functions…" />
         <div class="list" id="list-functions"></div>
       </div>
       <div class="tabpane" data-pane="strings">
-        <input class="filter" id="filter-strings" type="text" spellcheck="false" placeholder="⌕ filter strings…" />
+        <input class="filter" id="filter-strings" type="text" spellcheck="false" data-i18n-ph="filter.strings.ph" placeholder="⌕ filter strings…" />
         <div class="list" id="list-strings"></div>
       </div>
       <div class="tabpane" data-pane="imports"><div class="list" id="list-imports"></div></div>
@@ -58,27 +80,30 @@
   <!-- ─────────── center: code ─────────── -->
   <section id="center" class="panel">
     <div class="tabbar" id="center-tabs">
-      <button class="tab active" data-tab="decompile">✎ decompile</button>
-      <button class="tab" data-tab="disasm">⌗ disassembly</button>
-      <button class="tab" data-tab="graph">◈ call graph</button>
-      <button class="tab" data-tab="hex">⊞ memory hex</button>
+      <button class="tab active" data-tab="decompile" data-i18n="tab.decompile">✎ decompile</button>
+      <button class="tab" data-tab="disasm" data-i18n="tab.disasm">⌗ disassembly</button>
+      <button class="tab" data-tab="graph" data-i18n="tab.graph">◈ call graph</button>
+      <button class="tab" data-tab="hex" data-i18n="tab.hex">⊞ memory hex</button>
       <span class="tab-spring"></span>
-      <button class="tab mini" id="btn-decompile-all" title="Batch-decompile every function into a zip">↧ all functions → zip</button>
+      <button class="tab mini" id="btn-decompile-all" data-i18n="decompile.all" data-i18n-title="decompile.all.title">↧ all functions → zip</button>
     </div>
 
     <div class="tabbody" id="center-body">
       <div class="tabpane active" data-pane="decompile">
         <div class="code-head" id="decompile-head">
-          <span class="code-title" id="decompile-title">no function selected</span>
-          <button class="btn btn-ghost btn-xs hidden" id="btn-copy-code">⧉ copy</button>
+          <span class="code-title" id="decompile-title" data-i18n="decompile.title.none">no function selected</span>
+          <span class="spring"></span>
+          <button class="btn btn-ghost btn-xs hidden" id="btn-rename-fn" data-i18n-title="rename.btn.title" title="rename">✎</button>
+          <button class="btn btn-ghost btn-xs hidden" id="btn-note-fn" data-i18n-title="note.btn.title" title="note">✚</button>
+          <button class="btn btn-ghost btn-xs hidden" id="btn-copy-code" data-i18n="btn.copy" data-i18n-title="btn.copy.title">⧉ copy</button>
           <button class="btn btn-ghost btn-xs hidden" id="btn-download-code">↧ .c</button>
         </div>
-        <div class="code" id="code-decompile"><div class="code-empty">select a function from the left →</div></div>
+        <div class="code" id="code-decompile"><div class="code-empty" data-i18n="code.empty.dec">select a function from the left →</div></div>
       </div>
 
       <div class="tabpane" data-pane="disasm">
-        <div class="code-head"><span class="code-title" id="disasm-title">—</span></div>
-        <div class="code" id="code-disasm"><div class="code-empty">click a function, constant hit or search result</div></div>
+        <div class="code-head"><span class="code-title" id="disasm-title" data-i18n="code.title.none">—</span></div>
+        <div class="code" id="code-disasm"><div class="code-empty" data-i18n="disasm.empty">click a function, constant hit or search result</div></div>
       </div>
 
       <div class="tabpane" data-pane="graph">
@@ -88,14 +113,14 @@
             <option value="2" selected>depth 2</option>
             <option value="3">depth 3</option>
           </select>
-          <button class="btn btn-ghost btn-xs" id="graph-refresh">⟲ rebuild</button>
-          <button class="btn btn-ghost btn-xs" id="graph-fit">⤢ fit</button>
-          <span class="code-title" id="graph-info">select a function, then rebuild</span>
+          <button class="btn btn-ghost btn-xs" id="graph-refresh" data-i18n="graph.refresh">⟲ rebuild</button>
+          <button class="btn btn-ghost btn-xs" id="graph-fit" data-i18n="graph.fit">⤢ fit</button>
+          <span class="code-title" id="graph-info" data-i18n="graph.info.none">select a function, then rebuild</span>
           <span class="dim" id="graph-stats"></span>
           <span class="graph-legend">
-            <i class="lg lg-caller"></i>caller
-            <i class="lg lg-center"></i>center
-            <i class="lg lg-callee"></i>callee
+            <i class="lg lg-caller"></i><span data-i18n="graph.caller">caller</span>
+            <i class="lg lg-center"></i><span data-i18n="graph.center">center</span>
+            <i class="lg lg-callee"></i><span data-i18n="graph.callee">callee</span>
           </span>
         </div>
         <canvas id="graph-canvas"></canvas>
@@ -104,13 +129,14 @@
       <div class="tabpane" data-pane="hex">
         <div class="code-head hexbar">
           <select id="hex-block"></select>
-          <button class="btn btn-ghost btn-xs" id="hex-prev">◂ prev</button>
-          <button class="btn btn-ghost btn-xs" id="hex-next">next ▸</button>
-          <input id="hex-offset" type="text" spellcheck="false" placeholder="offset" class="mini-input"/>
-          <button class="btn btn-ghost btn-xs" id="hex-go">read</button>
+          <button class="btn btn-ghost btn-xs" id="hex-prev" data-i18n="hex.prev">◂ prev</button>
+          <button class="btn btn-ghost btn-xs" id="hex-next" data-i18n="hex.next">next ▸</button>
+          <input id="hex-offset" type="text" spellcheck="false" data-i18n-ph="hex.offset.ph" placeholder="offset" class="mini-input"/>
+          <button class="btn btn-ghost btn-xs" id="hex-go" data-i18n="hex.go">read</button>
+          <button class="btn btn-ghost btn-xs" id="hex-send" data-i18n-title="hex.send.title" title="send to decoder">⚗</button>
           <span class="code-title" id="hex-info"></span>
         </div>
-        <div class="code" id="code-hex"><div class="code-empty">pick a memory block and read it raw</div></div>
+        <div class="code" id="code-hex"><div class="code-empty" data-i18n="hex.empty">pick a memory block and read it raw</div></div>
       </div>
     </div>
   </section>
@@ -119,34 +145,34 @@
 
   <!-- ─────────── right: inspector ─────────── -->
   <section id="right" class="panel">
-    <div class="tabbar"><span class="tab active static">inspector</span></div>
+    <div class="tabbar"><span class="tab active static" data-i18n="insp.title">inspector</span></div>
     <div class="inspector">
 
       <div class="insp-group" id="insp-program">
-        <h3>program</h3>
-        <div class="insp-body" id="program-info"><div class="insp-empty">nothing loaded</div></div>
+        <h3 data-i18n="insp.program">program</h3>
+        <div class="insp-body" id="program-info"><div class="insp-empty" data-i18n="insp.nothing">nothing loaded</div></div>
       </div>
 
       <div class="insp-group" id="insp-sections">
-        <h3>sections · entropy</h3>
+        <h3 data-i18n="insp.sections">sections · entropy</h3>
         <div class="insp-body" id="sections-info"></div>
       </div>
 
       <div class="insp-group" id="insp-overlay">
-        <h3>overlay</h3>
+        <h3 data-i18n="insp.overlay">overlay</h3>
         <div class="insp-body" id="overlay-info"></div>
       </div>
 
       <div class="insp-group" id="insp-xrefs">
-        <h3>xrefs · <span id="xrefs-target">—</span>
-          <button class="btn btn-ghost btn-xs" id="btn-show-graph" title="open call graph around this function">◈ graph</button>
+        <h3><span data-i18n="insp.xrefs">xrefs ·</span> <span id="xrefs-target">—</span>
+          <button class="btn btn-ghost btn-xs" id="btn-show-graph" data-i18n="insp.graph.btn" data-i18n-title="insp.graph.btn.title" title="open call graph">◈ graph</button>
         </h3>
-        <div class="insp-body" id="xrefs-info"><div class="insp-empty">select a function</div></div>
+        <div class="insp-body" id="xrefs-info"><div class="insp-empty" data-i18n="insp.select">select a function</div></div>
       </div>
 
       <div class="insp-group" id="insp-constants">
-        <h3>crypto constants <em id="count-constants"></em></h3>
-        <div class="insp-body" id="constants-info"><div class="insp-empty">loads with the program</div></div>
+        <h3><span data-i18n="insp.constants">crypto constants</span> <em id="count-constants"></em></h3>
+        <div class="insp-body" id="constants-info"><div class="insp-empty" data-i18n="insp.constants.hint">loads with the program</div></div>
       </div>
 
     </div>
@@ -156,11 +182,11 @@
 
 <!-- ═══════════════════════ bottom drawer ═══════════════════════ -->
 <section id="drawer" class="open">
-  <button id="drawer-toggle" title="toggle panel">▾ decoder lab</button>
+  <button id="drawer-toggle" data-i18n="drawer.toggle">▾ decoder lab</button>
   <div class="tabbar" id="drawer-tabs">
-    <button class="tab active" data-tab="decoder">⚗ decoder lab</button>
-    <button class="tab" data-tab="search">⌕ search</button>
-    <button class="tab" data-tab="log">▤ log</button>
+    <button class="tab active" data-tab="decoder" data-i18n="tab.decoder">⚗ decoder lab</button>
+    <button class="tab" data-tab="search" data-i18n="tab.search">⌕ search</button>
+    <button class="tab" data-tab="log" data-i18n="tab.log">▤ log</button>
   </div>
 
   <div class="tabbody" id="drawer-body">
@@ -168,37 +194,38 @@
     <div class="tabpane active" data-pane="decoder">
       <div class="decoder-grid">
         <div class="dec-col">
-          <div class="dec-label">input <span class="dim" id="dec-in-size"></span>
-            <button class="btn btn-ghost btn-xs" id="btn-dec-paste-string" title="load selected string">← string</button>
+          <div class="dec-label"><span data-i18n="dec.input">input</span> <span class="dim" id="dec-in-size"></span>
+            <span class="spring"></span>
+            <button class="btn btn-ghost btn-xs" id="btn-dec-paste-string" data-i18n="dec.paste" data-i18n-title="dec.paste.title" title="load selected string">← string</button>
           </div>
-          <textarea id="dec-input" spellcheck="false" placeholder="bytes, hex, base64, ciphertext…&#10;tip: click a string in the sidebar, then ← string"></textarea>
+          <textarea id="dec-input" spellcheck="false" data-i18n-ph="dec.input.ph" placeholder="bytes, hex, base64, ciphertext…"></textarea>
           <div class="dec-row">
-            <label class="chk"><input type="radio" name="dec-mode" value="text" checked> text</label>
+            <label class="chk"><input type="radio" name="dec-mode" value="text" checked><span data-i18n="dec.mode.text">text</span></label>
             <label class="chk"><input type="radio" name="dec-mode" value="hex"> hex</label>
             <label class="chk"><input type="radio" name="dec-mode" value="b64"> b64</label>
             <span class="spring"></span>
-            <button class="btn btn-primary btn-xs" id="btn-xor-brute">⛨ xor brute</button>
-            <button class="btn btn-xs" id="btn-xor-derive">⛭ derive key</button>
-            <input id="dec-prefix" class="mini-input" type="text" spellcheck="false" placeholder="known prefix, e.g. flag{" style="width:14ch"/>
-            <button class="btn btn-primary btn-xs" id="btn-decode">▸ run chain</button>
+            <button class="btn btn-primary btn-xs" id="btn-xor-brute" data-i18n="dec.brute">⛨ xor brute</button>
+            <button class="btn btn-xs" id="btn-xor-derive" data-i18n="dec.derive">⛭ derive key</button>
+            <input id="dec-prefix" class="mini-input" type="text" spellcheck="false" data-i18n-ph="dec.prefix.ph" placeholder="known prefix, e.g. flag{" style="width:14ch"/>
+            <button class="btn btn-primary btn-xs" id="btn-decode" data-i18n="dec.run">▸ run chain</button>
           </div>
         </div>
 
         <div class="dec-col dec-ops">
-          <div class="dec-label">chain
+          <div class="dec-label"><span data-i18n="dec.chain">chain</span>
             <span class="spring"></span>
             <select id="op-select"></select>
-            <button class="btn btn-xs" id="btn-op-add">+ add</button>
+            <button class="btn btn-xs" id="btn-op-add" data-i18n="dec.add">+ add</button>
           </div>
-          <div id="op-list" class="op-list"><div class="insp-empty">no ops — result passes through unchanged</div></div>
+          <div id="op-list" class="op-list"><div class="insp-empty" data-i18n="dec.noops">no ops — result passes through unchanged</div></div>
         </div>
 
         <div class="dec-col">
-          <div class="dec-label">output <span class="dim" id="dec-out-size"></span>
-            <label class="chk"><input type="checkbox" id="dec-show-hex"> hex view</label>
-            <button class="btn btn-ghost btn-xs" id="btn-dec-copy">⧉ copy</button>
+          <div class="dec-label"><span data-i18n="dec.output">output</span> <span class="dim" id="dec-out-size"></span>
+            <label class="chk"><input type="checkbox" id="dec-show-hex"><span data-i18n="dec.hexview">hex view</span></label>
+            <button class="btn btn-ghost btn-xs" id="btn-dec-copy" data-i18n="btn.copy" data-i18n-title="btn.copy.title">⧉ copy</button>
           </div>
-          <textarea id="dec-output" spellcheck="false" readonly placeholder="result appears here"></textarea>
+          <textarea id="dec-output" spellcheck="false" readonly data-i18n-ph="dec.result.ph" placeholder="result appears here"></textarea>
           <div class="dec-log" id="dec-log"></div>
         </div>
       </div>
@@ -208,8 +235,8 @@
     <!-- search -->
     <div class="tabpane" data-pane="search">
       <div class="search-bar">
-        <input id="search-hex" type="text" spellcheck="false" placeholder="hex byte pattern, e.g. 63 7c 77 7b or 637c777b" />
-        <button class="btn btn-primary btn-xs" id="btn-search">⌕ search memory</button>
+        <input id="search-hex" type="text" spellcheck="false" data-i18n-ph="search.ph" placeholder="hex byte pattern, e.g. 63 7c 77 7b or 637c777b" />
+        <button class="btn btn-primary btn-xs" id="btn-search" data-i18n="search.btn">⌕ search memory</button>
         <span class="dim" id="search-info"></span>
       </div>
       <div class="list wide" id="search-results"></div>
@@ -225,9 +252,9 @@
 <!-- ═══════════════════════ status bar ═══════════════════════ -->
 <footer id="statusbar">
   <span id="st-engine">● engine idle</span>
-  <span class="sep">·</span><span id="st-program">no program</span>
-  <span class="sep">·</span><span id="st-fn">0 fn</span>
-  <span class="sep">·</span><span id="st-str">0 strings</span>
+  <span class="sep">·</span><span id="st-program" data-i18n="st.noprogram">no program</span>
+  <span class="sep">·</span><span id="st-fn"></span>
+  <span class="sep">·</span><span id="st-str"></span>
   <span class="spring"></span>
   <span id="st-job"></span>
   <span class="sep">·</span><span id="st-version"></span>
@@ -236,17 +263,82 @@
 <!-- empty-state hero overlay -->
 <div id="hero">
   <div class="hero-card">
-    <div class="hero-mark">&lt;<span>♥</span>/&gt;</div>
+    <img class="hero-icon" src="/static/apple-touch-icon.png" alt="" draggable="false">
     <h1>lovely<b>reverse</b></h1>
-    <p class="hero-sub">a hands-on reverse-engineering workstation,<br>powered by the Ghidra engine. no AI — you do the thinking.</p>
-    <button class="btn btn-primary" id="hero-open">⌖ open a binary</button>
-    <p class="hero-hint">…or drop a file anywhere on this page,<br>or paste an absolute path in the bar above.</p>
-    <p class="hero-tip">Ghidra auto-analysis runs on open · try a CTF crackme →</p>
+    <p class="hero-sub" data-i18n-html="hero.sub">a hands-on reverse-engineering workstation,<br>powered by the Ghidra engine. no AI — you do the thinking.</p>
+    <button class="btn btn-primary" id="hero-open" data-i18n="hero.open">⌖ open a binary</button>
+    <p class="hero-hint" data-i18n-html="hero.hint">…or drop a file anywhere on this page,<br>or paste an absolute path in the bar above.</p>
+    <p class="hero-tip" data-i18n="hero.tip">Ghidra auto-analysis runs on open · try a CTF crackme →</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════ modals ═══════════════════════ -->
+<div id="modal-settings" class="modal-backdrop hidden">
+  <div class="modal-card">
+    <div class="modal-head"><span data-i18n="settings.title">settings</span><button class="modal-x" data-close>✕</button></div>
+    <div class="modal-row">
+      <label for="set-lang" data-i18n="settings.language">language</label>
+      <select id="set-lang"><option value="zh">中文</option><option value="en">English</option></select>
+    </div>
+    <div class="modal-row">
+      <label for="set-theme" data-i18n="settings.theme">theme</label>
+      <select id="set-theme">
+        <option value="light" data-i18n="theme.light">light</option>
+        <option value="dark" data-i18n="theme.dark">graphite &amp; rose (dark)</option>
+      </select>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-xs" id="btn-keys" data-i18n="keys.title">shortcuts</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-ask" class="modal-backdrop hidden">
+  <div class="modal-card">
+    <div class="modal-head"><span id="ask-title">—</span><button class="modal-x" data-close>✕</button></div>
+    <input id="ask-input" type="text" spellcheck="false" autocomplete="off" />
+    <div class="modal-foot">
+      <button class="btn btn-xs" id="ask-clear" data-i18n="note.clear">clear</button>
+      <span class="spring"></span>
+      <button class="btn btn-primary btn-xs" id="ask-ok" data-i18n="btn.ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-keys" class="modal-backdrop hidden">
+  <div class="modal-card">
+    <div class="modal-head"><span data-i18n="keys.title">shortcuts</span><button class="modal-x" data-close>✕</button></div>
+    <table class="keys-table">
+      <tr><td><kbd>g</kbd></td><td data-i18n="keys.goto"></td></tr>
+      <tr><td><kbd>/</kbd></td><td data-i18n="keys.filter"></td></tr>
+      <tr><td><kbd>1</kbd>–<kbd>4</kbd></td><td data-i18n="keys.tabs"></td></tr>
+      <tr><td><kbd>n</kbd></td><td data-i18n="keys.rename"></td></tr>
+      <tr><td><kbd>m</kbd></td><td data-i18n="keys.note"></td></tr>
+      <tr><td><kbd>?</kbd></td><td data-i18n="keys.help"></td></tr>
+      <tr><td><kbd>esc</kbd></td><td data-i18n="keys.esc"></td></tr>
+    </table>
+  </div>
+</div>
+
+<div id="modal-unpack" class="modal-backdrop hidden">
+  <div class="modal-card modal-wide">
+    <div class="modal-head">
+      <span data-i18n="unpack.btn">unpack PyInstaller</span>
+      <span class="spring"></span>
+      <button class="btn btn-xs hidden" id="unpack-ghidra" data-i18n="unpack.open_ghidra">send to Ghidra</button>
+      <button class="modal-x" data-close>✕</button>
+    </div>
+    <div class="unpack-meta" id="unpack-meta"></div>
+    <div class="unpack-grid">
+      <div class="list unpack-list" id="unpack-list"></div>
+      <pre class="code unpack-preview" id="unpack-preview"></pre>
+    </div>
   </div>
 </div>
 
 <div id="toasts"></div>
 
+<script src="/static/i18n.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

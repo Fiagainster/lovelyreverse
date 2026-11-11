@@ -35,13 +35,13 @@
 | 面板 | 能力 |
 |---|---|
 | **functions** | 全量函数列表，实时过滤，滚动加载；点击即反编译 |
-| **✎ decompile** | C 伪代码 + 自研语法高亮；**代码里的函数名/地址可点击跳转**；一键复制 / 下载 `.c` |
+| **✎ decompile** | C 伪代码 + 自研语法高亮；**代码里的函数名/地址可点击跳转**；✎ 重命名 / ✚ 备注 / 复制 / 下载 `.c` |
 | **⌗ disassembly** | 汇编清单（地址/字节/助记符），call 目标可点击跟进 |
 | **◈ call graph** | **函数调用图**（Ghidra 式层次布局）：caller 在上 / callee 在下，层次分层 + 重心排序减少交叉；实线箭头表示调用方向、虚线表示回边；**双击节点增量展开**，滚轮缩放、拖拽平移 |
-| **⊞ memory hex** | 按内存块原始读取，翻页/跳偏移 |
+| **⊞ memory hex** | 按内存块原始读取，翻页/跳偏移；一键送入解码实验室 |
 | **strings** | Ghidra 识别的字符串，一键送入解码实验室 |
 | **imports / exports** | 导入函数（含所属库）与导出入口 |
-| **inspector** | 程序信息（格式/架构/编译器/基址）、节区熵值条（>7.2 提示 likely packed）、**Overlay 附加数据检测**、交叉引用、加密常量命中 |
+| **inspector** | 程序信息（格式/架构/编译器/基址）、节区熵值条（>7.2 提示 likely packed）、**Overlay 附加数据检测**、交叉引用、加密常量命中、**PyInstaller 一键解包** |
 
 ### CTF 特化（本工具的存在意义）
 
@@ -51,14 +51,35 @@
   - 单字节爆破 + 可打印评分排序（`⛨ xor brute`）
   - **已知明文推密钥**（`⛭ derive key`）：输入 `flag{` 前缀，直接算出循环 XOR 密钥（含周期一致性检查）
 - **Overlay / 熵分析**（binwalk 精髓）：纯 Python 解析 PE/ELF 节表，`end_of_raw` 之后的数据判为 overlay；逐节香农熵 + 全文件熵剖面，加壳一眼可见。
+- **PyInstaller 一键解包**（pyinstxtractor 内置化）：识别 CArchive cookie，解出全部条目与 PYZ 模块，pyc 头自动补齐（PEP 552），入口脚本置顶，预览后可直接送 Ghidra 分析。
 - **批量反编译**：一键把全部函数导出为 zip（每个函数一个 `.c`）。
+
+<p align="center">
+  <img src="docs/screenshots/decoder.png" width="96%" alt="lovelyreverse decoder lab">
+  <br/>
+  <em>Decoder lab — chained ops: hex ciphertext XOR 0x5A → flag, in the default light theme</em>
+</p>
+
+### 工作站体验
+
+- **中文界面**：默认中文，右上角 ⚙ 设置一键切 English；**浅色主题默认**，石墨玫瑰暗色保留，偏好本地记忆。
+- **函数重命名 + 备注**：伪代码里改名即时同步到函数列表与调用图，备注跟随函数持久化。
+- **最近打开**：工具栏「最近」下拉，历史样本一键重开。
+- **一键送解码实验室**：strings 行 ⚗、hex 面板发送按钮，密文零搬运。
+- **快捷键**：`g` 跳转、`/` 过滤、`1-4` 切左侧页签、`n` 重命名、`m` 备注、`?` 帮助、`esc` 关弹窗。
+- **窄屏自适应**：小窗口下检查器收进侧滑抽屉，三栏不挤爆。
 
 ### 实战验证
 
-用本工具实测（2026-11-10）：
+用本工具实测（2026-11-10 / 11-11）：
 
 - 学习笔记中的 `ez_debug` 密文，解码链 `[xor ATRI] → [xor 17]` 直接解出 `flag{y0u_ar3_g0od_@_Debu9}`
 - gcc 编译的含 AES S-box / SHA-256 K / TEA δ / Base64 表的测试程序，常量扫描 **5/5 命中、零误报**，TEA δ 正确归属到 `tea_encrypt` 函数
+- 题库 `pyre.exe`（PyInstaller 打包题）：overlay 自动识别，解包 **60 个条目 · PYZ 133 模块**，入口脚本 `1.pyc` pyc magic 修复后可直接预览 / 送 Ghidra
+
+<p align="center">
+  <img src="docs/screenshots/unpack.png" width="72%" alt="PyInstaller unpack modal">
+</p>
 
 ## 快速开始
 
@@ -99,7 +120,7 @@ lvr serve
 python -m lovelyreverse serve
 ```
 
-浏览器自动打开 `http://127.0.0.1:7331`。把二进制拖进页面、点 Open binary、或粘贴绝对路径回车——第一次打开一个样本需要跑 Ghidra 自动分析（小文件几十秒），之后秒开。
+浏览器自动打开 `http://127.0.0.1:7331`。界面默认**中文 + 浅色主题**（右上角 ⚙ 设置里可切 English / 石墨玫瑰暗色）。把二进制拖进页面、点 ⌖ 打开二进制、或粘贴绝对路径回车——第一次打开一个样本需要跑 Ghidra 自动分析（小文件几十秒），之后秒开。
 
 Ghidra 安装位置按以下顺序发现：`--ghidra <路径>` → `GHIDRA_INSTALL_DIR` 环境变量 → 常见目录自动扫描。
 
@@ -132,7 +153,7 @@ flag 到手
 ```
 
 - **EngineManager**（`src/lovelyreverse/engine/manager.py`）：JVM 所有权 + 单 worker 线程串行化所有 Ghidra 调用；项目缓存于 `~/.lovelyreverse/projects`，同一二进制二次打开秒级
-- **零依赖 HTTP 层**（`server/app.py`）：正则路由 + 任务农场（打开/批量反编译为后台 job，前端轮询）
+- **零依赖 HTTP 层**（`server/app.py`）：正则路由 + 任务农场（打开/批量反编译为后台 job，前端轮询）+ 带耗时的请求日志
 - **纯逻辑层**（`util/`）：`decode.py`（28 ops）、`xor.py`（爆破/推钥）、`binfile.py`（PE/ELF/熵/overlay，无任何依赖）
 - **签名库**（`engine/constants.py`）：声明式签名表，DWORD 类自动生成 BE/LE 变体
 
@@ -164,10 +185,11 @@ gh release create v0.1.0 dist/* --title "v0.1.0" --notes "..."
 - [ ] 结构体/数据类型编辑，Union 面板
 - [ ] Pattern Language（参考 ImHex）声明式解析数据
 - [ ] gdb / x64dbg 桥接（动态调试面板）
-- [ ] PyInstaller 一键解包（pyinstxtractor 内置化）+ pycdc 集成
+- [x] PyInstaller 一键解包（pyinstxtractor 内置化）
+- [ ] pycdc 集成（.pyc 反编译回源码）
 - [ ] 签名库社区化：YARA 规则导入、用户自定义签名
 - [ ] Ghidra 数据库复用（免重分析）
-- [ ] 国际化（i18n）
+- [x] 国际化（中文 / English 界面切换）
 
 ## 致谢
 

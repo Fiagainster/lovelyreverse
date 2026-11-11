@@ -17,6 +17,9 @@ out/
 .idea/
 .vscode/
 
+# 密钥（Ark API key 等）
+.env
+
 # 运行时数据（样本、case 目录等）
 samples/
 *.gpr

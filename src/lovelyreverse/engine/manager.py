@@ -58,6 +58,10 @@ class EngineManager:
         self.program_name: str | None = None
         self.source_path: str | None = None
 
+        # visible from HTTP threads without touching the engine queue
+        self.open_state = "idle"  # idle | opening
+        self.open_progress = ""
+
         self._decompiler: Any = None
         self._funcs_cache: list[dict[str, Any]] | None = None
         self._strings_cache: list[dict[str, Any]] | None = None
@@ -121,8 +125,24 @@ class EngineManager:
 
     def open(self, path: str | Path, progress: Callable[[str], None] | None = None) -> dict[str, Any]:
         """Import (or reuse) a binary and run auto-analysis. Returns program info."""
+        self.open_state = "opening"
+
+        def prog(s: str) -> None:
+            self.open_progress = s
+            if progress:
+                progress(s)
 
         def job() -> dict[str, Any]:
+            try:
+                return self._open_job(path, prog)
+            finally:
+                self.open_state = "idle"
+                self.open_progress = ""
+
+        return self.submit(job, timeout=None)
+
+    def _open_job(self, path: str | Path, progress: Callable[[str], None] | None) -> dict[str, Any]:
+        def inner() -> dict[str, Any]:
             from ghidra.base.project import GhidraProject
 
             src = Path(path)
@@ -193,7 +213,7 @@ class EngineManager:
                 progress("ready")
             return info
 
-        return self.submit(job, timeout=None)
+        return inner()
 
     def close(self) -> None:
         def job():
@@ -215,13 +235,31 @@ class EngineManager:
             self._thread = None
         # Terminate the JVM so that embedding processes (pytest, short-lived
         # scripts) exit promptly — JPype leaves non-daemon threads behind.
-        try:
-            import jpype
+        # Ghidra's analysis/worker threads are non-daemon and never stop, so
+        # shutdownJVM() can block forever (observed in pytest teardown). Run
+        # it on a helper thread with a grace budget; if it doesn't finish,
+        # abandon teardown and let the JVM die with the process.
+        import atexit
 
-            if jpype.isJVMStarted():
-                jpype.shutdownJVM()
-        except Exception:  # noqa: BLE001
-            pass
+        done = threading.Event()
+
+        def _kill() -> None:
+            try:
+                import jpype
+
+                if jpype.isJVMStarted():
+                    try:
+                        atexit.unregister(jpype.shutdownJVM)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    jpype.shutdownJVM()
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                done.set()
+
+        threading.Thread(target=_kill, name="lvr-jvm-kill", daemon=True).start()
+        done.wait(10.0)
 
     def _invalidate_caches(self) -> None:
         self._decompiler = None
@@ -261,7 +299,11 @@ class EngineManager:
     # ---------------------------------------------------------------- queries
 
     def program_info(self) -> dict[str, Any] | None:
-        return self.submit(lambda: self._program_info() if self.program else None, timeout=30)
+        if self.program is None:
+            # fast path: during a long auto-analysis the queue is busy; queueing
+            # here would block until its 30s timeout and surface as HTTP 500 (B2)
+            return None
+        return self.submit(lambda: self._program_info(), timeout=30)
 
     def _funcs(self) -> list[dict[str, Any]]:
         if self._funcs_cache is not None:
@@ -311,6 +353,68 @@ class EngineManager:
                 "name": f.getName(),
                 "size": int(f.getBody().getNumAddresses()),
             }
+
+        return self.submit(job, timeout=30)
+
+    # ------------------------------------------------------------- annotations
+
+    def _find_function(self, fm: Any, a: Any) -> Any:
+        f = fm.getFunctionAt(a) or fm.getFunctionContaining(a)
+        if f is None:
+            raise EngineError(f"no function at {_hex(int(a.getOffset()))}")
+        return f
+
+    def rename_function(self, addr: int, name: str) -> dict[str, Any]:
+        """Rename the function containing addr; persists to the project."""
+
+        def job():
+            program = self._require_program()
+            fm = program.getFunctionManager()
+            f = self._find_function(fm, self._to_addr(addr))
+            from ghidra.program.model.symbol import SourceType
+
+            old = str(f.getName())
+            f.setName(name, SourceType.USER_DEFINED)
+            self._funcs_cache = None
+            try:
+                self.project.save(program)
+            except Exception:  # noqa: BLE001 - in-memory change still applied
+                pass
+            return {"addr": int(f.getEntryPoint().getOffset()), "old": old, "name": name}
+
+        return self.submit(job, timeout=60)
+
+    def set_function_comment(self, addr: int, text: str) -> dict[str, Any]:
+        """Set the plate comment (shown atop decompiled output) of the function at addr."""
+
+        def job():
+            program = self._require_program()
+            fm = program.getFunctionManager()
+            f = self._find_function(fm, self._to_addr(addr))
+            from ghidra.program.model.listing import CodeUnit
+
+            entry = f.getEntryPoint()
+            cu = program.getListing().getCodeUnitAt(entry) or program.getListing().getCodeUnitContaining(entry)
+            if cu is None:
+                raise EngineError("no code unit at function entry")
+            cu.setComment(CodeUnit.PLATE_COMMENT, text)
+            try:
+                self.project.save(program)
+            except Exception:  # noqa: BLE001
+                pass
+            return {"addr": int(entry.getOffset()), "comment": text}
+
+        return self.submit(job, timeout=60)
+
+    def function_comment(self, addr: int) -> str | None:
+        def job():
+            program = self._require_program()
+            cu = program.getListing().getCodeUnitAt(self._to_addr(addr))
+            if cu is None:
+                return None
+            from ghidra.program.model.listing import CodeUnit
+
+            return cu.getComment(CodeUnit.PLATE_COMMENT)
 
         return self.submit(job, timeout=30)
 

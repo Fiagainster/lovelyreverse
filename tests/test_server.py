@@ -20,6 +20,7 @@ class StubEngine:
             for i in range(5)
         ]
         self.opened_paths: list[str] = []
+        self._comments: dict[int, str] = {}
 
     # lifecycle
     def open(self, path, progress=None):
@@ -88,9 +89,27 @@ class StubEngine:
         return [{"name": "AES S-box", "category": "block-cipher", "note": "", "length": 16,
                  "addr": 0x409000, "block": ".rdata", "function": None}]
 
+    # annotations
+    def rename_function(self, addr, name):
+        for f in self._functions:
+            if f["addr"] == addr:
+                old = f["name"]
+                f["name"] = name
+                return {"addr": addr, "old": old, "name": name}
+        return {"addr": addr, "old": None, "name": name}
+
+    def set_function_comment(self, addr, text):
+        self._comments[addr] = text
+        return {"addr": addr, "comment": text}
+
+    def function_comment(self, addr):
+        return self._comments.get(addr)
+
 
 @pytest.fixture()
-def server():
+def server(tmp_path_factory, monkeypatch):
+    # isolate app-data writes (recent.json etc.) from the real user dir
+    monkeypatch.setenv("LVR_DATA_DIR", str(tmp_path_factory.mktemp("lvrdata")))
     httpd = serve(AppState(StubEngine()), "127.0.0.1", 0)
     port = httpd.server_address[1]
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -257,3 +276,50 @@ class TestOpenFlow:
         assert job["status"] == "done"
         status, zbytes = get_raw(server, f"/api/download/decompile-all.zip?job={jid}")
         assert status == 200 and zbytes[:2] == b"PK"
+
+
+def _wait_job(server, jid):
+    for _ in range(100):
+        _, job = get(server, f"/api/job/{jid}")
+        if job["status"] != "running":
+            return job
+        time.sleep(0.05)
+    return job
+
+
+class TestAnnotationsAndRecent:
+    def _open(self, server, tmp_path, name="tiny.exe"):
+        sample = tmp_path / name
+        sample.write_bytes(b"MZ" + b"\x00" * 200)
+        _, data = post(server, "/api/open", {"path": str(sample)})
+        job = _wait_job(server, data["job"])
+        assert job["status"] == "done", job
+        return sample
+
+    def test_rename_and_comment(self, server, tmp_path):
+        self._open(server, tmp_path)
+        addr = 0x401000
+        _, out = post(server, f"/api/function/{addr}/rename", {"name": "check_flag"})
+        assert out["name"] == "check_flag" and out["old"] == "fun_0"
+        _, out = post(server, f"/api/function/{addr}/comment", {"text": "CRC check here"})
+        assert out["comment"] == "CRC check here"
+        _, out = get(server, f"/api/function/{addr}/comment")
+        assert out["comment"] == "CRC check here"
+
+    def test_rename_requires_program(self, server):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            post(server, "/api/function/4198400/rename", {"name": "x"})
+        assert e.value.code == 409
+
+    def test_rename_validates_name(self, server, tmp_path):
+        self._open(server, tmp_path)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            post(server, "/api/function/4198400/rename", {"name": "   "})
+        assert e.value.code == 400
+
+    def test_recent_lists_opened(self, server, tmp_path):
+        sample = self._open(server, tmp_path, "recent_sample.bin")
+        _, out = get(server, "/api/recent")
+        assert out["items"][0]["path"] == str(sample)
+        assert out["items"][0]["name"] == "recent_sample.bin"
+        assert out["items"][0]["size"] == 202

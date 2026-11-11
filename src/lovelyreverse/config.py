@@ -13,8 +13,14 @@ DEFAULT_PORT = 7331
 
 # Where Ghidra projects (imported programs) live, per user.
 def data_dir() -> Path:
-    """Persistent app data directory (Ghidra projects, logs)."""
-    if os.name == "nt":
+    """Persistent app data directory (Ghidra projects, logs).
+
+    Honors LVR_DATA_DIR (portable installs / test isolation).
+    """
+    env = os.environ.get("LVR_DATA_DIR")
+    if env:
+        d = Path(env)
+    elif os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home())
         d = Path(base) / APP_NAME
     else:

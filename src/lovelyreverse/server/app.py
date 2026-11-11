@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import re
+import sys
 import threading
 import time
 import traceback
@@ -28,6 +29,34 @@ from lovelyreverse.util.xor import xor_derive, xor_full_decode, xor_single_brute
 STATIC_DIR = Path(__file__).parent.parent / "resources" / "static"
 
 MAX_BODY = 32 * 1024 * 1024  # 32 MB cap on request bodies
+RECENT_CAP = 20
+
+
+# ---------------------------------------------------------------- recent list
+
+def _recent_file() -> Path:
+    from lovelyreverse.config import data_dir
+
+    return data_dir() / "recent.json"
+
+
+def _recent_load() -> list[dict[str, Any]]:
+    try:
+        items = json.loads(_recent_file().read_text(encoding="utf-8"))
+        return items if isinstance(items, list) else []
+    except Exception:  # noqa: BLE001 - missing/corrupt file just means empty
+        return []
+
+
+def _recent_record(path: str, size: int) -> None:
+    items = [i for i in _recent_load() if i.get("path") != path]
+    items.insert(0, {"path": path, "name": Path(path).name, "size": int(size), "ts": time.time()})
+    try:
+        _recent_file().write_text(
+            json.dumps(items[:RECENT_CAP], ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        pass
 
 
 # ------------------------------------------------------------------- job farm
@@ -104,6 +133,7 @@ class AppState:
         self.source_path = str(p)
         self.file_bytes = p.read_bytes()
         self.triage_info = file_triage(self.file_bytes)
+        _recent_record(str(p), len(self.file_bytes))
         job.log.append(f"file: {p.name} ({len(self.file_bytes):,} bytes)")
         info = self.engine.open(str(p), progress=lambda s: setattr(job, "progress", s))
         return info
@@ -118,8 +148,21 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
 
         # ---------------------------------------------------------- plumbing
 
-        def log_message(self, fmt: str, *args: Any) -> None:  # quieter logs
+        _t0 = 0.0
+
+        def log_message(self, fmt: str, *args: Any) -> None:  # default chatter stays off
             pass
+
+        def log_request(self, code: Any = "-", size: Any = "-") -> None:
+            """Concise request log with latency; successful static hits stay quiet (B8)."""
+            try:
+                dt = (time.perf_counter() - self._t0) * 1000
+            except Exception:  # noqa: BLE001
+                dt = 0.0
+            path = self.path.split("?", 1)[0] if isinstance(self.path, str) else "?"
+            if path.startswith("/static/") and code == 200:
+                return
+            sys.stderr.write(f"[lvr] {self.command} {path} {code} {dt:.0f}ms\n")
 
         def _json(self, obj: Any, status: int = 200) -> None:
             body = json.dumps(obj).encode("utf-8")
@@ -169,6 +212,7 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
         # ------------------------------------------------------------ routes
 
         def do_GET(self) -> None:  # noqa: N802
+            self._t0 = time.perf_counter()
             try:
                 self._route_get()
             except BrokenPipeError:
@@ -181,6 +225,7 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     pass
 
         def do_POST(self) -> None:  # noqa: N802
+            self._t0 = time.perf_counter()
             try:
                 self._route_post()
             except BrokenPipeError:
@@ -215,6 +260,8 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
             # ----- meta
             if path == "/api/status":
                 engine_ready = bool(getattr(state.engine, "_thread", None))
+                analyzing = getattr(state.engine, "open_state", "idle") == "opening"
+                progress = getattr(state.engine, "open_progress", "") or ""
                 program_loaded = False
                 try:
                     program_loaded = state.engine.program_info() is not None
@@ -224,6 +271,8 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     "version": __version__,
                     "engine_ready": engine_ready,
                     "program_loaded": program_loaded,
+                    "analyzing": analyzing,
+                    "progress": progress,
                     "source_path": state.source_path,
                 })
 
@@ -251,8 +300,12 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
             if path == "/api/exports":
                 return self._json({"items": state.engine.exports()})
 
+            # ----- recent opens
+            if path == "/api/recent":
+                return self._json({"items": _recent_load()})
+
             # ----- per-function
-            m = re.fullmatch(r"/api/function/(\d+)/(decompile|disasm|xrefs|callgraph)", path)
+            m = re.fullmatch(r"/api/function/(\d+)/(decompile|disasm|xrefs|callgraph|comment)", path)
             if m:
                 addr, what = int(m.group(1)), m.group(2)
                 if what == "decompile":
@@ -263,6 +316,8 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     return self._json(state.engine.xrefs(addr))
                 if what == "callgraph":
                     return self._json(state.engine.callgraph(addr, qi("depth", 2), qi("max", 250)))
+                if what == "comment":
+                    return self._json({"addr": addr, "comment": state.engine.function_comment(addr)})
 
             # ----- memory
             if path == "/api/memory/blocks":
@@ -288,6 +343,28 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                 if job is None:
                     return self._error("no such job", 404)
                 return self._json(job.to_dict())
+
+            # ----- unpacked file viewer (PyInstaller)
+            if path == "/api/unpack/file":
+                job = state.jobs.get(q("job"))
+                if not job or job.status != "done" or not isinstance(job.result, dict):
+                    return self._error("unpack job not ready", 409)
+                outdir = Path(job.result["outdir"]).resolve()
+                target = (outdir / q("name")).resolve()
+                try:
+                    target.relative_to(outdir)  # traversal guard
+                except ValueError:
+                    return self._error("bad path", 400)
+                if not target.is_file():
+                    return self._error("no such file", 404)
+                raw = target.read_bytes()
+                shown = raw[: 2 * 1024 * 1024]
+                return self._json({
+                    "name": q("name"),
+                    "size": target.stat().st_size,
+                    "truncated": len(raw) > len(shown),
+                    "data_b64": base64.b64encode(shown).decode(),
+                })
 
             # ----- downloads
             m = re.fullmatch(r"/api/download/decompile/(\d+)\.c", path)
@@ -402,6 +479,39 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     job.progress = f"{len(results)} functions"
                     return str(out)
                 return self._json({"job": state.jobs.spawn("decompile-all", target)})
+
+            # ----- annotations (F1)
+            m = re.fullmatch(r"/api/function/(\d+)/(rename|comment)", path)
+            if m:
+                if state.engine.program_info() is None:
+                    return self._error("no program loaded", 409)
+                addr = int(m.group(1))
+                try:
+                    if m.group(2) == "rename":
+                        name = str(body.get("name", "")).strip()
+                        if not name or len(name) > 200:
+                            return self._error("name must be 1-200 chars")
+                        return self._json(state.engine.rename_function(addr, name))
+                    return self._json(state.engine.set_function_comment(addr, str(body.get("text", ""))))
+                except Exception as e:  # noqa: BLE001 - engine errors -> client error
+                    return self._error(f"{type(e).__name__}: {e}", 400)
+
+            # ----- PyInstaller unpack (F5)
+            if path == "/api/unpack/pyinstaller":
+                src = str(body.get("path", "")).strip() or (state.source_path or "")
+                if not src:
+                    return self._error("path required")
+                p = Path(src)
+                if not p.is_file():
+                    return self._error(f"file not found: {src}")
+
+                def target(job: Job):
+                    from lovelyreverse.util.pyinstaller import unpack
+
+                    job.progress = "locating cookie"
+                    return unpack(src, progress=lambda s: setattr(job, "progress", s))
+
+                return self._json({"job": state.jobs.spawn("unpack-pyinstaller", target)})
 
             return self._error("unknown api route", 404)
 
