@@ -18,7 +18,7 @@
 
 ## 已知问题（按优先级）
 
-1. **pytest 全量套件偶发在引擎测试的 JVM 启动处挂住**（ intermittently, 约 1/3 概率）。
+1. **pytest 全量套件偶发在引擎测试的 JVM 启动处挂住**（intermittent，约 1/3 概率）。
    - 单独跑 `pytest -m engine` 从未挂过（多次 27-32s 完成）；独立脚本启动 JVM 也从未挂过。
    - 现象：引擎 fixture 的 `pyghidra.start()` 在 worker 线程里不开 JVM，且无报错（faulthandler 显示 startJVM 处有一次良性 SEH 打印——那行是 JPype on Windows 的已知噪音，JVM 实际能启动成功）。
    - 猜测：与并发 CPU 负载/资源竞争相关（常驻服务器 JVM + 浏览器同开时更容易复现）。
@@ -26,6 +26,16 @@
    - **续作方向**：把 JVM 启动改到主线程（PyGhidra 支持 `pyghidra.start()` 任意线程，但 Windows + JPype + pytest 组合值得试主线程）；或引擎测试改用 subprocess 隔离。
 2. **IAB（ZCode 内置浏览器）的 Playwright `press("Enter")` 不触发页面 keydown**：合成 `KeyboardEvent` 正常。真实浏览器不受影响（synthetic 与 trusted 事件都会触发 handler）。自动化测试该用 `dispatchEvent`。
 3. 函数计数：inspector 的 `function_count` 已改为与列表一致（`len(funcs_cache)`，不含 thunk/external）。
+
+## 调用图实现（v0.1.0 重写）
+
+- 布局参考 Ghidra `GraphServices`（jungrapht）：**Sugiyama 层次布局**，不是力导向。
+  - rank 计算：以中心节点为 0，沿 caller 方向 `-1`、callee 方向 `+1`，BFS 取最短（环自然收敛），钳制到 ±3。
+  - 层内顺序：4 轮 barycenter 排序最小化边交叉。
+  - 绘制：caller 在上 / 中心 / callee 在下；实线箭头 = 调用方向，虚线 = 回边（cyclic），同层边用二次曲线绕行。
+  - 交互：双击节点增量展开（对该节点再请求 `depth=1` 后合并重排）、拖拽节点、拖拽平移、滚轮缩放（0.15–3.5）、`fit` 按钮；最小自动缩放 0.6 保证标签可读，超出视口时以中心节点锚定。
+- **踩过的坑**：早期力导向实现里排斥力/引力参数配错，节点坐标发散到 `x≈1.7e7`，现象是画布全白 + 点击坐标全错。教训：图上一切坐标必须有界，布局后用 bbox 校验一次。
+- **另一个坑（会再次遇到）**：canvas 的 `width` attribute 与 CSS 自适应尺寸形成反馈环——`ResizeObserver` 观察 canvas + 读写 attribute 尺寸 → 容器变宽 → 再测量 → 无限放大（曾到 207,608px）。修法：CSS 显式 `width/height: 100%`、父级 `min-width/height: 0`、`ResizeObserver` 观察父容器、绘制前对测量值做上限保护（>8000 直接放弃绘制）。
 4. Ghidra 12.2 API 与旧文档差异踩坑记录（都已绕过）：
    - `FunctionManager.getFunctionByName` 不存在 → 迭代过滤
    - `ExternalManager.getExternalLocations()` 无参重载不存在 → 改用 `SymbolTable.getAllSymbols(True)` + `isExternal()`
