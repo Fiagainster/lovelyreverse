@@ -91,6 +91,7 @@ const LV_I18N = {
     "unpack.pick": "选择文件预览（大文件只显示前 2 MB）",
     "unpack.bin": "二进制文件，不支持预览",
     "unpack.bin.noexec": "二进制文件，不是可执行映像（PE/ELF）— 不能交给 Ghidra",
+    "unpack.copy_path": "复制路径",
     "unpack.open_ghidra": "把该文件交给 Ghidra",
 
     "drawer.toggle": "▾ 解码实验室",
@@ -344,6 +345,7 @@ const LV_I18N = {
     "unpack.pick": "pick a file to preview (first 2 MB of large files)",
     "unpack.bin": "binary file — no preview",
     "unpack.bin.noexec": "binary file, not an executable image (PE/ELF) — cannot be sent to Ghidra",
+    "unpack.copy_path": "copy path",
     "unpack.open_ghidra": "send to Ghidra",
 
     "drawer.toggle": "▾ decoder lab",

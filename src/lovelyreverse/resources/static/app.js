@@ -79,6 +79,12 @@ function sendToDecoder(text, mode = "text") {
   $("#dec-input").value = text;
   const radio = document.querySelector(`input[name="dec-mode"][value="${mode}"]`);
   if (radio) radio.checked = true;
+  // update the input size label right away (it used to stay stale until a run)
+  const nbytes = mode === "hex"
+    ? (text.match(/[0-9a-fA-F]/g) || []).length / 2
+    : mode === "b64" ? Math.floor(text.replace(/\s/g, "").length * 3 / 4)
+    : new TextEncoder().encode(text).length;
+  $("#dec-in-size").textContent = `(${nbytes} bytes)`;
   $("#drawer").classList.remove("closed");
   $("#drawer").classList.add("open"); // keep the two state classes mutually exclusive
   $("#drawer-toggle").textContent = t("drawer.hide");
@@ -528,6 +534,12 @@ function resetWorkspace(statusMsg) {
   $("#xrefs-target").textContent = "—";
   $("#xrefs-target").removeAttribute("data-addr");
   $("#xrefs-info").innerHTML = `<div class="insp-empty">${esc(t("insp.select"))}</div>`;
+  // unified search: a new program must start with a clean slate (stale
+  // keywords made old-program results look like they belonged to the new one)
+  const sq = $("#search-q");
+  if (sq) sq.value = "";
+  const sr = $("#search-results");
+  if (sr) sr.innerHTML = `<div class="code-empty">${esc(t("search.hint"))}</div>`;
   $("#constants-info").innerHTML = `<div class="insp-empty">${esc(t("insp.constants.hint"))}</div>`;
   $("#count-constants").textContent = "";
   $("#program-info").innerHTML = `<div class="insp-empty">${esc(t("insp.nothing"))}</div>`;
@@ -1980,8 +1992,18 @@ async function previewUnpackedFile(name) {
     }
     // not an executable image: preview text if readable, otherwise explain —
     // but never offer "send to Ghidra" for it
-    if (looksBinary(bytes, name)) prev.textContent = t("unpack.bin.noexec");
-    else prev.textContent = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    if (looksBinary(bytes, name)) {
+      // the natural next step for a .pyc/.data is grabbing the file on disk —
+      // show where it landed + a one-click path copy
+      const full = (unpackOutdir ? unpackOutdir.replace(/[\/]+$/, "") + "\\" : "") + name;
+      prev.innerHTML = `<div class="prev-warn">${esc(t("unpack.bin.noexec"))}</div>
+        <div class="prev-path"><code>${esc(full)}</code>
+        <button class="btn btn-xs" id="unpack-copy-path">⧉ ${esc(t("unpack.copy_path"))}</button></div>`;
+      const cp = document.getElementById("unpack-copy-path");
+      if (cp) cp.onclick = () => { navigator.clipboard.writeText(full).then(() => toast(t("toast.copied"), "ok", 1500)); };
+      return;
+    }
+    prev.textContent = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
   } catch (e) { prev.textContent = e.message; }
 }
 
