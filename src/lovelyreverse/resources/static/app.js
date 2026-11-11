@@ -1308,11 +1308,18 @@ async function runSearch() {
   }
   html += searchGroup(t("search.group.strings", { n: strRes.total ?? strRes.items.length }), rows);
 
-  // function names — click → decompile
+  // function names — click → decompile; when the match came from the
+  // signature (not the name), surface the signature so the hit is explainable
   rows = "";
   for (const f of fnRes.items) {
+    const q = pat.toLowerCase();
+    const inName = f.name.toLowerCase().includes(q);
+    const sig = inName ? "" : (f.signature || "");
+    const sigHtml = sig
+      ? `<div class="row-sub">${esc(sig.length > 90 ? sig.slice(0, 90) + "…" : sig)}</div>`
+      : "";
     rows += `<div class="row" tabindex="0" data-kind="function" data-addr="${f.addr.toString(16)}" data-fname="${esc(f.name)}">
-      <span class="addr">${hexpad(f.addr)}</span><span class="name">${esc(f.name)}</span><span class="meta">${f.size}</span>
+      <span class="addr">${hexpad(f.addr)}</span><span class="name">${esc(f.name)}</span><span class="meta">${f.size}</span>${sigHtml}
     </div>`;
   }
   html += searchGroup(t("search.group.functions", { n: fnRes.total ?? fnRes.items.length }), rows);
