@@ -45,7 +45,7 @@
 
 ### CTF 特化（本工具的存在意义）
 
-- **做题链联动**（照着真实解题流程做：查壳 → 字符串锚点 → 交叉引用 → 反编译）：查壳结论面板给出方向（干净 / 疑似加壳 + 下一步提示）；字符串单击看「谁在用它」，双击跳进反编译的**精确引用行**；导入点击直达调用者；右键菜单随处可查引用、送解码、复制。字符串和代码不再是两个孤岛。
+- **做题链联动**（照着真实解题流程做：查壳 → 字符串锚点 → 交叉引用 → 反编译）：查壳结论面板给出方向（干净 / 疑似加壳 + 下一步提示）；字符串单击看「谁在用它」，双击跳进反编译的**精确引用行**；导入点击直达调用者。**全站右键菜单**（10 类对象：反编译符号 / 选中内容 / xref 行 / 常量行 / 函数行 / 字符串 / 导入 / 导出 / 搜索结果 / 汇编行）——跳转、查引用、反汇编、跟随跳转、送解码、重命名、备注、复制，全是快捷入口。字符串和代码不再是两个孤岛。
 - **加密常量识别**（FindCrypt 精髓）：内置 40+ 签名——AES S-box/Te0、SM4 S-box/FK、SM3 IV、MD5/SHA-1/SHA-256/SHA-512 IV 与 K 表、Blowfish P 数组、Camellia σ、TEA/XTEA δ、ChaCha σ、Base64/32/Uuencode 字母表、CRC 表、ECC 域素数（程序化生成，零抄写错误）。自动展开大小端双变体，命中自动归属到函数。打开一个带 AES 的 crackme，`.rdata` 里的 S-box 直接标出来。
 - **解码实验室**（CyberChef 精髓）：28 种操作**链式**叠加（hex/base64/base32/ascii85/URL/ROT-n/ROT47/XOR/RC4/位反转/C 转义/gzip/zlib/raw inflate/MD5/SHA-1/SHA-256…），输入支持 text/hex/b64 三种模式。
 - **XOR 工具箱**：
@@ -185,7 +185,7 @@ flag 到手
                           零依赖，静态文件+JSON API        单线程任务队列（Ghidra 非线程安全）
 ```
 
-- **EngineManager**（`src/lovelyreverse/engine/manager.py`）：JVM 所有权 + 单 worker 线程串行化所有 Ghidra 调用；项目缓存于 `~/.lovelyreverse/projects`，同一二进制二次打开秒级
+- **EngineManager**（`src/lovelyreverse/engine/manager.py`）：JVM 所有权 + 单 worker 线程串行化所有 Ghidra 调用；Ghidra 工程建在**样本同级的 `_lvr/` 目录**（`<样本目录>/_lvr/<程序名>.gpr`，二次打开秒级复用分析结果），目录不可写或设置 `LVR_PROJECT_DIR` 时回退到 `~/.lovelyreverse/projects`
 - **零依赖 HTTP 层**（`server/app.py`）：正则路由 + 任务农场（打开/批量反编译为后台 job，前端轮询）+ 带耗时的请求日志
 - **纯逻辑层**（`util/`）：`decode.py`（28 ops）、`xor.py`（爆破/推钥）、`binfile.py`（PE/ELF/熵/overlay，无任何依赖）
 - **签名库**（`engine/constants.py`）：声明式签名表，DWORD 类自动生成 BE/LE 变体

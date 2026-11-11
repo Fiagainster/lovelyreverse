@@ -1,6 +1,6 @@
 # 开发笔记 & 续作指南（内部文档）
 
-> 状态快照 2026-11-11（v0.2.1 已发布；main 新增「做题链」联动：查壳结论 / 字符串→xref→反编译高亮 / 导入→调用者，v0.3.0 候选）。给下一次继续开发的人（或下一个会话）看的。
+> 状态快照 2026-11-11（v0.2.1 已发布；main 新增「做题链」联动 + 右键菜单 v2 + 工程目录 `_lvr/` 迁移，v0.3.0 候选）。给下一次继续开发的人（或下一个会话）看的。
 
 ## 当前进度
 
@@ -39,6 +39,22 @@
 
 引擎侧配套：`decompile()` 现在返回 `addr_lines`（行→最小代码地址）/ `addr_lines_hi`（行→最大代码地址）/ `addr_data`（行→首个数据地址）；xrefs 的 to-refs 带 `function`/`function_addr`。前端高亮规则按序：**target 精确命中 addr_data → 引用指令落在某行代码区间内 → 落在空档则归下一行**（参数装配指令在 call 之前，空档属于后面的语句）→ 兜底取 ≤ref 的最后一行。
 
+### 右键菜单 v2（图标化 + 10 场景）
+
+用户反馈：原菜单「太长、不美观」+「右键情形能否更多」。落地两件事：
+
+1. **紧凑化**：菜单项全部改为「图标 + 短词」（⌖跳转 / ⌕查引用 / ⌗反汇编 / ◈调用图 / ⚗送解码 / ✎重命名 / ✚备注 / ⧉复制），横向排列（`#ctx-menu .menu-item` 覆盖 `.menu-item` 的 column 布局为 row），min-width 118px，完整语义留在 `title` tooltip。文案从「跳转到反编译」这类句子缩成 2-4 字。
+2. **10 类右键场景**（contextmenu 监听里按 `e.target.closest(...)` 分派）：① 反编译代码里的符号 ② 代码/hex 里的选中文本 ③ xref 行（跳转按 X1 逻辑优先函数入口）④ 加密常量行 ⑤ 函数列表行（反编译/调用图/重命名/备注/复制）⑥ 字符串行（跳转引用/查引用/送解码/复制）⑦ 导入行（查调用者/复制）⑧ 导出行 ⑨ 搜索结果行 ⑩ 汇编行（有跳转目标时多一个 ⌖跟随跳转）。`Esc` / 点击空白处关闭。
+
+### 工程目录迁移：样本同级 `_lvr/`（C 盘不再增长）
+
+用户反馈：每次打开二进制都在往 C 盘复制项目（`~/.lovelyreverse/projects`）。现改为**每个样本一个独立工程，建在样本文件同级目录**：`<样本目录>/_lvr/<程序名>.gpr|.rep`。
+
+- `_project_for(src)`：可写性探针（mkdir + 写删测试文件）失败 → 回退中央目录（`~/.lovelyreverse/projects/main`）；`LVR_PROJECT_DIR` 或显式 `project_dir_path`（测试用）强制走中央目录。
+- 程序名来自 `_safe_project_name(src.stem)`：只留 `[A-Za-z0-9_.-]`，非 ASCII/超长 → `"p_" + sha1(stem)[:10]`（中文样本名也能落盘）。
+- `/api/program` 新增 `project_dir` 字段，inspector「程序信息」显示工程目录行（用户能看到工程建在哪）。
+- 二次打开同一样本 = 打开已有 `.gpr` 直接 openProgram，秒级——分析结果就地复用，与样本同进退（删样本目录即清理）。
+
 ## 已知问题（按优先级）
 
 1. **常量扫描弱签名**：4 字节签名（如 `AES Rcon[1..4] (BE)`、`CRC-32 poly (LE)`）在任意样本上可能巧合命中（crackme_easy、flower、NotNormalExe 均有此类误报）。constants.py 目前没有最短长度过滤。
@@ -61,6 +77,7 @@
 8. **MinGW 的 COFF 符号表 = 假 overlay**：`-g` 构建的 PE 尾部是符号表+字符串表，naive 的 `file_len - sections_end` 会把所有 debug 构建的 crackme 判成「附加数据」。修法：解析 COFF header 的 `PointerToSymbolTable`/`NumberOfSymbols`，算出 `sym_ptr + 20*nsym` 处的字符串表长度并入 end_max；前端 overlay 面板顺带显示「含 COFF 符号表（N 个符号）」。**判定顺序也重要：高熵要排在 overlay 前**（压缩载荷本身就是加壳证据）。
 9. **导入 thunk 地址别用 external symbol**：external symbol 的地址在独立地址空间（offset 0x29 之类），xref 查不到任何东西。真正的「谁调用了 strcmp」要找 **thunk function**：`FunctionManager.getFunctions(True)` 里 `f.isThunk()` 的那批——函数名即导入名，入口在镜像内，调用方 CALL 的就是它。
 10. **`tri.max_entropy` 曾是幽灵字段**：前端读它但后端 triage() 从没提供过 → 熵分支永远不触发。前后端字段约定要有测试钉住。
+11. **Ghidra 项目路径元素不许以点开头**：`GhidraProject.createProject(dir, ".lvr", …)` 直接抛 `InvalidProjectNameException: Path element starting with '.' is not permitted`。目录名用 `_lvr`。另外 Git Bash 会把中文路径的 env 变量/参数搞乱码（sample 路径带中文时别用 bash 传），用 Python 的 glob 自己找文件。
 
 ## 调用图实现（v0.1.0 重写，机制未变）
 
@@ -89,12 +106,13 @@
 
 ## 续作清单（Roadmap 对应的实现提示）
 
-- **v0.3.0 候选**：做题链（已实现，见上节）。发版前可顺手：弱签名标记（已知问题 #1）、xref 面板过滤 0x2e 之类垃圾地址行。
+- **v0.3.0 候选**：做题链 + 右键菜单 v2 + `_lvr/` 工程迁移（均已实现，见上节）。发版前可顺手：弱签名标记（已知问题 #1）、xref 面板过滤 0x2e 之类垃圾地址行。
 - **Linux/macOS**：`config.py` 已平台无关（hint 目录按平台分支），主要工作是实际跑一遍 + 文档。
 - **pycdc 集成**：pyc 反编译仍是缺口，解包出 .pyc 后目前只能靠 dis。可考虑捆绑/调用 pycdc。
 - **Pattern Language**：`.reference/ImHex` 有完整 DSL 实现；第一步可以只做「结构体声明 → 结构化视图」。
 - **gdb 桥**：Windows 优先方案是 gdbserver（WSL/远程）+ MI 协议 over stdlib；先做「断点/单步/读寄存器/读内存」四件事。
-- **Ghidra 数据库复用**：open() 已实现「项目里有同名 program 就直接 openProgram」（二次打开秒级），可进一步把 `.rep` 项目与样本路径做映射持久化。
+- **签名库扩充**：`.reference/yara4ida` 的 SIGS 目录有最全的 crypto/hash/压缩签名集，可写转换脚本导入。
+- ~~**Ghidra 数据库复用**~~：已实现（v0.3.0 候选）——`.rep` 工程与样本路径一一映射（样本同级 `_lvr/`），二次打开秒级。可再做的：工程清单页（跨样本浏览 `_lvr/`）、打开旧样本时提示「检测到已有分析工程」。
 - **签名库扩充**：`.reference/yara4ida` 的 SIGS 目录有最全的 crypto/hash/压缩签名集，可写转换脚本导入。
 
 ## 开发环境备忘
@@ -140,3 +158,9 @@
 3. 查壳结论：challenge1 → v-ok「未见加壳特征」（COFF 1535 符号正确排除假 overlay）；crackme_easy → v-ok；c_sm4 → v-bad（熵 7.82 + PyInstaller overlay）；Ferris → v-bad「最大熵 7.93」+ overlay 402,059 B ✅
 4. 字符串右键菜单：查引用（谁在用它）/ 送解码实验室（文本）/ 复制 ✅
 5. 全量 pytest 118 passed / 7 skipped（binfile COFF 修复未破坏任何用例）✅
+
+**右键菜单 v2 + `_lvr/` 工程（2026-11-11，UI 实测）**：
+
+1. 10 类右键场景全数实测：xref 行（跳转/复制地址，点「跳转」正确落到 0x140008294 反汇编）、常量行（查引用/反汇编/复制地址）、汇编行（有目标 → 跟随跳转/查引用/复制，无目标 → 查引用/复制）、搜索结果行（反汇编/查引用/复制地址，"50 55" 3 命中）+ 前一轮已验的反编译符号/选中文本/函数/字符串/导入/导出 ✅
+2. challenge1 打开 → `_lvr/challenge1.gpr|.rep|.lock` 出现在样本同级目录（原 `.lvr` 因 Ghidra 拒点开头路径改名）；`/api/program` 返回 `project_dir`，inspector 显示工程目录行 ✅
+3. `node --check` + `ast.parse` 全过；改动后全量 pytest 118 passed / 7 skipped ✅
