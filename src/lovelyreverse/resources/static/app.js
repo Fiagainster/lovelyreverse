@@ -590,10 +590,15 @@ async function loadProgram() {
 
 const PAGE = 400;
 
+let _fnLoadInFlight = false;
 async function loadFunctions(append) {
   const list = $("#list-functions");
-  if (!append) { S.functionsLoaded = 0; list.innerHTML = `<div class="loading">${esc(t("list.loading.fn"))}</div>`; }
+  // fast scrolling fires the scroll handler repeatedly — never let two
+  // appends race (that would duplicate rows)
+  if (append && _fnLoadInFlight) return;
+  if (!append) { S.functionsLoaded = 0; _fnLoadInFlight = false; list.innerHTML = `<div class="loading">${esc(t("list.loading.fn"))}</div>`; }
   const offset = S.functionsLoaded;
+  _fnLoadInFlight = true;
   try {
     const data = await api(`functions?q=${encodeURIComponent(S.functionsQuery)}&offset=${offset}&limit=${PAGE}`);
     if (!append) list.innerHTML = "";
@@ -606,6 +611,9 @@ async function loadFunctions(append) {
       list.innerHTML = `<div class="code-empty">${esc(t("list.no_match"))}</div>`;
   } catch (e) {
     if (!append) list.innerHTML = `<div class="code-empty">${esc(e.message)}</div>`;
+    else logLine("functions append failed: " + e.message, "err");  // appends used to fail silently
+  } finally {
+    _fnLoadInFlight = false;
   }
 }
 
