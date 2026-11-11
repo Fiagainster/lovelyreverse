@@ -111,7 +111,7 @@
 到 [Releases](https://github.com/Fiagainster/lovelyreverse/releases) 下载最新的 `.whl`，然后：
 
 ```bash
-pip install lovelyreverse-0.3.1-py3-none-any.whl
+pip install lovelyreverse-0.3.2-py3-none-any.whl
 lvr serve
 ```
 
@@ -235,6 +235,10 @@ gh release create v0.1.0 dist/* --title "v0.1.0" --notes "..."
 - [FindCrypt-Ghidra](https://github.com/d3v1l401/FindCrypt-Ghidra) / [signsrch](https://github.com/nihilus/IDA_Signsrch) — 常量识别思路
 - [Cutter](https://github.com/rizinorg/cutter) / [ImHex](https://github.com/WerWolv/ImHex) — 工作站交互参考
 - [DIE](https://github.com/horsicq/DIE-engine) / [capa](https://github.com/mandiant/capa) — 检测启发式参考
+
+## 更新历史
+
+按版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 
