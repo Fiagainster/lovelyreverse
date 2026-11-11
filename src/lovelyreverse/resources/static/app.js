@@ -655,6 +655,11 @@ async function renameCurrentFn() {
     const row = $(`#list-functions .row[data-addr="${addr}"] .name`);
     if (row) row.textContent = clean;
     if (G.rawNodes.has(addr)) { G.rawNodes.set(addr, clean); layoutGraph(); pokeGraph(); }
+    // the open pseudocode still shows the old name — re-decompile it
+    if (activeTab("#center-tabs") === "decompile") {
+      const res = await api(`function/${addr}/decompile`);
+      renderCode(res.code);
+    }
     toast(t("toast.renamed", { name: clean }), "ok");
     logLine(`rename ${hexpad(addr)}: ${name} → ${clean}`, "hi");
   } catch (e) { toast(e.message, "error"); }
