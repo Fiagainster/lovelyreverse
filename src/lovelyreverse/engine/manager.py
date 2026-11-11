@@ -11,6 +11,8 @@ Design notes
 
 from __future__ import annotations
 
+import hashlib
+import os
 import queue
 import threading
 import time
@@ -48,7 +50,18 @@ class _Box:
 class EngineManager:
     def __init__(self, ghidra_install_dir: Path | None = None, project_dir_path: Path | None = None):
         self._ghidra_dir = ghidra_install_dir
+        # Central project storage. With no explicit override, samples instead
+        # get a per-binary `_lvr` project NEXT TO THE SAMPLE (reusable
+        # analysis, nothing grows on the system drive); this dir is only the
+        # fallback for unwritable locations and file-picker uploads.
         self._project_dir_path = project_dir_path or project_dir()
+        self._project_forced = project_dir_path is not None
+        if not self._project_forced:
+            env = os.environ.get("LVR_PROJECT_DIR")
+            if env:
+                self._project_dir_path = Path(env)
+                self._project_forced = True
+        self._project_location: str | None = None
         self._queue: queue.Queue[tuple[Callable[[], Any], _Box] | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._boot_error: BaseException | None = None
@@ -141,6 +154,33 @@ class EngineManager:
 
         return self.submit(job, timeout=None)
 
+    def _project_for(self, src: Path) -> tuple[Path, str]:
+        """Where to put the Ghidra project for this sample.
+
+        Default: `<sample dir>/_lvr/<name>` — analysis lives beside the
+        binary and is reused verbatim on reopen (seconds instead of a full
+        re-import), and nothing accumulates on the system drive. Falls back
+        to the central dir when the sample's own location is not writable
+        (read-only mounts, Program Files...), or when a central location is
+        forced (explicit project_dir_path / LVR_PROJECT_DIR).
+
+        Note: Ghidra rejects project paths containing dot-prefixed elements
+        ("Path element starting with '.' is not permitted"), so the folder
+        is `_lvr`, not `.lvr`.
+        """
+        if self._project_forced:
+            return self._project_dir_path / "main", "main"
+        pdir = src.parent / "_lvr"
+        pname = _safe_project_name(src.stem)
+        try:
+            pdir.mkdir(parents=True, exist_ok=True)
+            probe = pdir / ".write-test"
+            probe.write_bytes(b"")
+            probe.unlink()
+        except OSError:
+            return self._project_dir_path / "main", "main"
+        return pdir, pname
+
     def _open_job(self, path: str | Path, progress: Callable[[str], None] | None) -> dict[str, Any]:
         def inner() -> dict[str, Any]:
             from ghidra.base.project import GhidraProject
@@ -164,12 +204,12 @@ class EngineManager:
             if progress:
                 progress(f"importing {src.name}")
 
-            pdir = self._project_dir_path / "main"
+            pdir, pname = self._project_for(src)
             pdir.mkdir(parents=True, exist_ok=True)
-            if (pdir / "main.rep").exists() or (pdir / "main.gpr").exists():
-                project = GhidraProject.openProject(pdir, "main", True)
+            if (pdir / f"{pname}.rep").exists() or (pdir / f"{pname}.gpr").exists():
+                project = GhidraProject.openProject(pdir, pname, True)
             else:
-                project = GhidraProject.createProject(pdir, "main", False)
+                project = GhidraProject.createProject(pdir, pname, False)
 
             try:
                 program = None
@@ -211,6 +251,7 @@ class EngineManager:
             self.program = program
             self.program_name = name
             self.source_path = str(src)
+            self._project_location = str(pdir)
 
             if progress:
                 progress("collecting caches")
@@ -309,6 +350,7 @@ class EngineManager:
         return {
             "name": program.getName(),
             "source_path": self.source_path,
+            "project_dir": self._project_location,
             "format": str(program.getExecutableFormat()),
             "language_id": str(lang.getLanguageID()),
             "compiler": str(program.getCompilerSpec().getCompilerSpecID()),
@@ -942,3 +984,17 @@ def _monitor() -> Any:
 def _safe_program_name(name: str) -> str:
     keep = "".join(c if (c.isalnum() or c in "._-") else "_" for c in name)
     return keep[:96] or "program"
+
+
+def _safe_project_name(stem: str) -> str:
+    """ASCII-safe Ghidra project name for a sample stem.
+
+    Non-ASCII or stripped-out names become a short deterministic hash so
+    e.g. `PangBai 过家家` and two mangled-to-identical stems never collide
+    on disk (project dir names are invisible plumbing).
+    """
+    keep = "".join(c if (c.isalnum() or c in "._-") else "_" for c in stem)
+    keep = keep[:60]
+    if not keep or keep != stem or not keep.isascii():
+        return "p_" + hashlib.sha1(stem.encode("utf-8", "ignore")).hexdigest()[:10]
+    return keep

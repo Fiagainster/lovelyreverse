@@ -33,7 +33,13 @@ def data_dir() -> Path:
 
 
 def project_dir() -> Path:
-    """Directory holding Ghidra projects managed by lovelyreverse."""
+    """Fallback directory for Ghidra projects.
+
+    Per-sample projects now live in `<sample dir>/_lvr/` (see
+    EngineManager._project_for); this central dir only receives projects for
+    samples in unwritable locations and file-picker uploads. Force it for
+    everything with LVR_PROJECT_DIR.
+    """
     d = data_dir() / "projects"
     d.mkdir(parents=True, exist_ok=True)
     return d
