@@ -196,3 +196,31 @@
 2. E2E 顺带抓出并修掉 **loadProgram 自我清空回归**（踩坑 #13）✅
 3. 非引擎 pytest 118 passed；`node --check` 过 ✅
 4. 干净态验证：中央 projects/samples/recent.json + 三个样本树 `_lvr` + 7 个 %TEMP% 解包残留全部清空后重跑全链路 ✅
+
+
+## 通宵真人手操实测（2026-11-12，v0.3.2，10 项修复）
+
+以浏览器手操方式把 10 个样本全链路过了一遍（不写测试脚本，纯点击/输入），发现并修复：
+
+| # | 问题 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | xref 卡片 UNCONDITIONAL_CALL 盖住地址 | .xref-type 固定 6ch 无 overflow 保护 | shortRefType 短标签映射 + title 全名 + ellipsis |
+| 2 | 检查器标题显示 0X1400018C3 | .insp-group h3 的 text-transform:uppercase 波及 | #xrefs-target 豁免 |
+| 3 | 空态说「从左侧选函数」但列表为空 | code.empty.dec 双场景复用 | 新增 code/disasm.empty.noprogram |
+| 4 | 解码链输出=密文（参数失同步） | op 参数绑 onchange 依赖失焦时序 | 改绑 input 逐键同步 |
+| 5 | 重命名后伪代码还是旧名 | renameCurrentFn 不刷新代码体 | 改名后对当前函数重新反编译 |
+| 6 | 切样本搜索框残留旧词 | resetWorkspace 不清 search-q | 清空输入框与结果区 |
+| 7 | 快速滚动函数列表行重复 | loadFunctions append 无并发守卫 | in-flight flag + append 失败写日志 |
+| 8 | 搜 flag 命中 __nh_malloc 像错的 | 命中依据（签名 _NhFlag）不可见 | 命中行下显示签片段落（.row-sub） |
+| 9 | pyc 预览无处可拿 | 只显示警告 | 显示 _lvr/unpacked 落盘路径 + 复制按钮 |
+| 10 | 送解码后字节数标签不更新 | sendToDecoder 不写 dec-in-size | 立即按模式计算字节数 |
+
+**实测覆盖**：challenge1（做题链+重命名+备注+解码 flag）/ c_sm4（SM4 命中@0x41d4c3，数字节区名为样本自带）/ pyre（解包 68 条目，入口 pyc 路径可复制）/ crackme_easy（双击 good sn → FUN_00401370:23 高亮）/ flower（685 fn 滚动加载 400→685）/ MazE（ELF 反编译+调用图）/ ez_debug（4047 fn；1.6MB 尾巴被正确识别为 COFF 符号表 32,738 符号——误报排除逻辑的活体证明）/ Ferris（熵 7.93 → 疑似加壳）。
+
+**踩坑 #14**：IAB 的 clip 截图高度超过视口剩余空间时会滚动拼接，画面内容重复——看起来像 DOM 渲染了两份。遇到"重复渲染"先用 querySelectorAll 数 DOM 再下结论。
+
+**踩坑 #15**：在隐藏页签里测滚动加载必然"失效"（clientHeight=0，scroll 事件都不会有）——自动化测试前先确认目标面板处于 active 态。
+
+**遗留观察**（未修，不影响使用）：
+- 常量命中落在数据段时反汇编标题显示 `? · 0x…`（函数名缺失，可显示所属内存块名替代）
+- 解码实验室 op 参数默认值靠 OPS 定义里的 def，UI 上 placeholder 与实际值偶尔不一致（填过一次后 placeholder 就变了）
