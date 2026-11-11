@@ -1,6 +1,6 @@
 # 开发笔记 & 续作指南（内部文档）
 
-> 状态快照 2026-11-11（v0.2.1 已发布；main 新增「做题链」联动 + 右键菜单 v2 + 工程目录 `_lvr/` 迁移，v0.3.0 候选）。给下一次继续开发的人（或下一个会话）看的。
+> 状态快照 2026-11-11（v0.2.1 已发布；main =「做题链」+ 右键菜单 v2 + `_lvr/` 工程 + 五张 v0.3.0 截图重拍，v0.3.0 候选就绪）。给下一次继续开发的人（或下一个会话）看的。
 
 ## 当前进度
 
@@ -17,7 +17,7 @@
 | `lvr doctor` + 部署自检（Ghidra/Java 探测、fail-fast） | ✅ 完成，12 个 CLI 单测 |
 | 测试 | ✅ 125 个（118 不需要 Ghidra + 7 个引擎集成），全量 72.85s |
 | CI workflow | ✅ 写好 |
-| README | ✅ 完成（含截图；**截图角标仍是 v0.1.0，待重拍**） |
+| README | ✅ 完成（五张截图已用 v0.3.0 界面重拍，browser-use 后台直存 `docs/screenshots/`） |
 
 ## v0.2.0 变更摘要
 
@@ -59,9 +59,10 @@
 
 1. **常量扫描弱签名**：4 字节签名（如 `AES Rcon[1..4] (BE)`、`CRC-32 poly (LE)`）在任意样本上可能巧合命中（crackme_easy、flower、NotNormalExe 均有此类误报）。constants.py 目前没有最短长度过滤。
    - **续作方向**：length < 8 的命中标 `weak: true`，前端弱化显示；或要求命中处上下文有附加结构（如 Rcon 后跟 S-box）。
-2. **截图角标待重拍**：README 五张截图仍是 v0.1.0 界面（右下角版本角标）。浏览器面板可用时重拍（hero 空态+收起 drawer / workstation 反编译+做题链 / 调用图 / 解码链 / 解包）。
-3. **IAB（ZCode 内置浏览器）的 Playwright `press("Enter")` 不触发页面 keydown**：合成 `KeyboardEvent` 正常。真实浏览器不受影响（synthetic 与 trusted 事件都会触发 handler）。自动化测试该用 `dispatchEvent`。
-4. **pyghidra 启动间歇失败（~1/3 概率）**：`_GhidraBundleFinder.find_spec` 递归爆栈（launcher.py:116 无条件 `from ghidra.framework import Application`）。两个诱因：`%TEMP%` 下残留空 `ghidra/` 目录会遮蔽 `import ghidra`（已删）；脚本从 %TEMP% 直接跑也易触发。**从仓库 cwd 用 `python -m lovelyreverse serve` 或 `python -c "exec(...)"` 启动可靠**。另：jpype 的 atexit 钩子是 `_core._JTerminate` 而非 `shutdownJVM`，两者都要 unregister 才不挂死退出（manager.shutdown 已修）。
+2. **IAB（ZCode 内置浏览器）的 Playwright `press("Enter")` 不触发页面 keydown**：合成 `KeyboardEvent` 正常。真实浏览器不受影响（synthetic 与 trusted 事件都会触发 handler）。自动化测试该用 `dispatchEvent`。
+3. **pyghidra 启动间歇失败（~1/3 概率）**：`_GhidraBundleFinder.find_spec` 递归爆栈（launcher.py:116 无条件 `from ghidra.framework import Application`）。两个诱因：`%TEMP%` 下残留空 `ghidra/` 目录会遮蔽 `import ghidra`（已删）；脚本从 %TEMP% 直接跑也易触发。**从仓库 cwd 用 `python -m lovelyreverse serve` 或 `python -c "exec(...)"` 启动可靠**。另：jpype 的 atexit 钩子是 `_core._JTerminate` 而非 `shutdownJVM`，两者都要 unregister 才不挂死退出（manager.shutdown 已修）。
+
+（原「截图角标待重拍」已解决：2026-11-11 用 browser-use 后台直存重拍五张 v0.3.0 截图，顺带修掉两个 drawer 布局 bug，见踩坑 #12。）
 
 ## 踩坑记录（v0.2.0 新增）
 
@@ -78,6 +79,7 @@
 9. **导入 thunk 地址别用 external symbol**：external symbol 的地址在独立地址空间（offset 0x29 之类），xref 查不到任何东西。真正的「谁调用了 strcmp」要找 **thunk function**：`FunctionManager.getFunctions(True)` 里 `f.isThunk()` 的那批——函数名即导入名，入口在镜像内，调用方 CALL 的就是它。
 10. **`tri.max_entropy` 曾是幽灵字段**：前端读它但后端 triage() 从没提供过 → 熵分支永远不触发。前后端字段约定要有测试钉住。
 11. **Ghidra 项目路径元素不许以点开头**：`GhidraProject.createProject(dir, ".lvr", …)` 直接抛 `InvalidProjectNameException: Path element starting with '.' is not permitted`。目录名用 `_lvr`。另外 Git Bash 会把中文路径的 env 变量/参数搞乱码（sample 路径带中文时别用 bash 传），用 Python 的 glob 自己找文件。
+12. **drawer 状态类的两个隐藏坑（重拍截图时暴露）**：① `--drawer-h` 从未被任何规则/JS 赋值，grid 高度公式 `calc(100vh - 46px - 24px - var(--drawer-h, 236px))` 永远按 236 扣——`#drawer.closed` 用 `!important` 缩到 32px 后，状态栏下方留 ~204px 死白。修：`body:has(#drawer.closed) { --drawer-h: 32px }`。② HTML 初始 `class="open"`，toggle 只加减 `closed`，两个类并存 → `body:has(#drawer.open) #hero{display:none}` 永远命中，**收起抽屉后空态 hero 回不来**。修：toggle 里让 open/closed 互斥（sendToDecoder 展开时同步补回 open）。教训：同一个状态用两个类表达必然漂移，状态类要么互斥维护、要么只留一个。
 
 ## 调用图实现（v0.1.0 重写，机制未变）
 
@@ -164,3 +166,10 @@
 1. 10 类右键场景全数实测：xref 行（跳转/复制地址，点「跳转」正确落到 0x140008294 反汇编）、常量行（查引用/反汇编/复制地址）、汇编行（有目标 → 跟随跳转/查引用/复制，无目标 → 查引用/复制）、搜索结果行（反汇编/查引用/复制地址，"50 55" 3 命中）+ 前一轮已验的反编译符号/选中文本/函数/字符串/导入/导出 ✅
 2. challenge1 打开 → `_lvr/challenge1.gpr|.rep|.lock` 出现在样本同级目录（原 `.lvr` 因 Ghidra 拒点开头路径改名）；`/api/program` 返回 `project_dir`，inspector 显示工程目录行 ✅
 3. `node --check` + `ast.parse` 全过；改动后全量 pytest 118 passed / 7 skipped ✅
+
+**发版终检（2026-11-11，v0.3.0 候选定稿）**：
+
+1. API 冒烟对照作者笔记工作流：锚点字符串 → xref（DATA+PARAM 双引用，带函数入口）→ decompile 行映射（gap 落「下一行」规则正中 `printf("Please input flag: ");`）；fgets thunk → 调用者 main；常量/熵字段齐全 ✅
+2. 五张 README 截图用 v0.3.0 界面重拍（browser-use 后台直存 docs/screenshots/）：hero 空态 / workstation（做题链高亮 + 查壳结论 + `_lvr` 工程目录行）/ 调用图（深度 1 层次布局）/ 解码链（XOR 0x17 → XOR "ATRI" → flag）/ PyInstaller 解包（60 条目 + manifest 预览）✅
+3. 过程中抓到并修掉两个 drawer 布局 bug（踩坑 #12：收起后死白 + hero 永不回）✅
+4. 全量 pytest 125 passed；`node --check` 过 ✅

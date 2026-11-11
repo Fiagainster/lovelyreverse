@@ -8,7 +8,7 @@
 <p align="center">
   <img src="docs/screenshots/workstation.png" width="96%" alt="lovelyreverse workstation — decompile view">
   <br/>
-  <em>Decompile view — clickable identifiers, syntax highlighting, live entropy bars</em>
+  <em>Workstation — string anchor → xref → the exact decompile line highlighted; packer verdict & entropy bars in the inspector</em>
 </p>
 
 <p align="center">
@@ -58,7 +58,7 @@
 <p align="center">
   <img src="docs/screenshots/decoder.png" width="96%" alt="lovelyreverse decoder lab">
   <br/>
-  <em>Decoder lab — chained ops: hex ciphertext XOR 0x5A → flag, in the default light theme</em>
+  <em>Decoder lab — chained ops: hex ciphertext → XOR 0x17 → XOR "ATRI" → flag, in the default light theme</em>
 </p>
 
 ### 工作站体验
