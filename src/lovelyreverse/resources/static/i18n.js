@@ -43,7 +43,9 @@ const LV_I18N = {
     "btn.copy": "⧉ 复制",
     "btn.copy.title": "复制到剪贴板",
     "code.empty.dec": "从左侧选择一个函数 →",
+    "code.empty.noprogram": "先打开一个二进制：拖入文件、粘贴路径回车，或点右上角「最近」",
     "disasm.empty": "点击函数、常量命中或搜索结果",
+    "disasm.empty.noprogram": "先打开一个二进制，这里才有内容可看",
     "code.title.none": "—",
 
     "graph.depth": "深度 {n}",
@@ -294,7 +296,9 @@ const LV_I18N = {
     "btn.copy": "⧉ copy",
     "btn.copy.title": "copy to clipboard",
     "code.empty.dec": "select a function from the left →",
+    "code.empty.noprogram": "Open a binary first: drop a file, paste a path + Enter, or use Recent",
     "disasm.empty": "click a function, constant hit or search result",
+    "disasm.empty.noprogram": "Open a binary first — this view fills once something is loaded",
     "code.title.none": "—",
 
     "graph.depth": "depth {n}",

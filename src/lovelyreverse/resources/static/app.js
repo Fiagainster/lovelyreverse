@@ -520,9 +520,9 @@ function resetWorkspace(statusMsg) {
   $("#st-program").textContent = statusMsg || t("st.noprogram");
   renderVerdict();   // handles S.triage == null → "nothing loaded"
   $("#decompile-title").textContent = t("decompile.title.none");
-  $("#code-decompile").innerHTML = `<div class="code-empty">${esc(t("code.empty.dec"))}</div>`;
+  $("#code-decompile").innerHTML = `<div class="code-empty">${esc(t("code.empty.noprogram"))}</div>`;
   $("#disasm-title").textContent = t("code.title.none");
-  $("#code-disasm").innerHTML = `<div class="code-empty">${esc(t("disasm.empty"))}</div>`;
+  $("#code-disasm").innerHTML = `<div class="code-empty">${esc(t("disasm.empty.noprogram"))}</div>`;
   for (const id of ["btn-copy-code", "btn-download-code", "btn-rename-fn", "btn-note-fn"])
     $(`#${id}`).classList.add("hidden");
   $("#xrefs-target").textContent = "—";
@@ -942,6 +942,16 @@ function renderOverlay() {
   }
 }
 
+function shortRefType(t) {
+  /* Ghidra ref types get long (UNCONDITIONAL_CALL, COMPUTED_CALL_INDIRECT...)
+   * and blow past the fixed 6ch column — normalize to short labels. */
+  let s = String(t);
+  s = s.replace(/^UNCONDITIONAL_/, "").replace(/^CONDITIONAL_/, "").replace(/^COMPUTED_/, "");
+  if (s === "INDIRECTION") s = "PTR";
+  if (s.endsWith("_INDIRECT")) s = "I" + s.slice(0, -9);
+  return s;
+}
+
 async function loadXrefs(addr, opts = {}) {
   $("#xrefs-target").textContent = hexa(addr);
   $("#xrefs-target").dataset.addr = addr;
@@ -953,12 +963,12 @@ async function loadXrefs(addr, opts = {}) {
     if (res.to.length) {
       html += `<div class="xref-label">${esc(t("xrefs.to"))} (${res.to.length})</div>`;
       html += res.to.slice(0, 40).map((r) =>
-        `<div class="xref-row" tabindex="0" data-addr="${Number(r.addr).toString(16)}"${r.function_addr != null ? ` data-faddr="${Number(r.function_addr)}" data-fname="${esc(r.function || "")}"` : ""}><span class="xref-type">${esc(r.type)}</span><span class="xref-addr">${hexpad(r.addr)}</span><span class="xref-name">${esc(r.function || "")}</span></div>`).join("");
+        `<div class="xref-row" tabindex="0" data-addr="${Number(r.addr).toString(16)}"${r.function_addr != null ? ` data-faddr="${Number(r.function_addr)}" data-fname="${esc(r.function || "")}"` : ""}><span class="xref-type" title="${esc(r.type)}">${esc(shortRefType(r.type))}</span><span class="xref-addr">${hexpad(r.addr)}</span><span class="xref-name">${esc(r.function || "")}</span></div>`).join("");
     } else html += `<div class="insp-empty">${esc(t("xrefs.none"))}</div>`;
     if (res.from.length) {
       html += `<div class="xref-label">${esc(t("xrefs.from"))} (${res.from.length})</div>`;
       html += res.from.slice(0, 40).map((r) =>
-        `<div class="xref-row" tabindex="0" data-addr="${Number(r.to).toString(16)}"><span class="xref-type">${esc(r.type)}</span><span class="xref-addr">${hexpad(r.to)}</span></div>`).join("");
+        `<div class="xref-row" tabindex="0" data-addr="${Number(r.to).toString(16)}"><span class="xref-type" title="${esc(r.type)}">${esc(shortRefType(r.type))}</span><span class="xref-addr">${hexpad(r.to)}</span></div>`).join("");
     }
     box.innerHTML = html;
     box.querySelectorAll(".xref-row").forEach((row) =>
@@ -1128,11 +1138,15 @@ function renderOps() {
       <button class="op-rm" data-rm="${i}" title="remove">✕</button>
     </div>`;
   }).join("");
-  list.querySelectorAll("input[data-arg]").forEach((inp) =>
-    inp.onchange = () => {
+  list.querySelectorAll("input[data-arg]").forEach((inp) => {
+    const sync = () => {
       const i = Number(inp.dataset.i), arg = inp.dataset.arg;
       S.ops[i].args[arg] = inp.type === "checkbox" ? inp.checked : inp.value;
-    });
+    };
+    inp.addEventListener("input", sync);   // every keystroke — no reliance on blur ordering
+    inp.addEventListener("change", sync);  // checkbox toggles & paste-commit
+    if (inp.type === "checkbox") inp.addEventListener("click", sync);
+  });
   list.querySelectorAll("[data-rm]").forEach((b) =>
     b.onclick = () => { S.ops.splice(Number(b.dataset.rm), 1); renderOps(); });
 }
