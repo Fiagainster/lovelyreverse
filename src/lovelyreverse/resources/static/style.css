@@ -631,13 +631,16 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--faint); }
 
 #hero {
   position: fixed;
-  inset: 46px 0 24px;
+  inset: 46px 0 56px; /* toolbar + closed drawer strip (32px) + statusbar */
   background: radial-gradient(ellipse at 50% 38%, rgba(var(--rose-rgb), .08), transparent 55%), var(--bg0);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 40;
 }
+
+/* drawer open on the empty state: the lab takes over, don't paint through it */
+body:has(#drawer.open) #hero { display: none; }
 .hero-card { text-align: center; max-width: 520px; padding: 20px; animation: rise .5s ease both; }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
 .hero-icon {

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lovelyreverse"
-version = "0.1.0"
+version = "0.2.0"
 description = "A hands-on reverse-engineering workstation powered by the Ghidra engine. 手搓向逆向工程工作站。"
 readme = "README.md"
 license = { text = "MIT" }
