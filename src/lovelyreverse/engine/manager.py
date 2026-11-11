@@ -190,22 +190,35 @@ class EngineManager:
                 raise EngineError(f"file not found: {src}")
             name = _safe_program_name(src.name)
             if progress:
-                progress("closing previous program")
-
-            if self.project is not None:
-                try:
-                    self.project.close()
-                except Exception:  # noqa: BLE001 - best-effort cleanup
-                    pass
-                self.project = None
-                self.program = None
-            self._invalidate_caches()
-
-            if progress:
                 progress(f"importing {src.name}")
 
             pdir, pname = self._project_for(src)
             pdir.mkdir(parents=True, exist_ok=True)
+
+            # Open the NEW project while the old program is still alive, and
+            # only close the old one after the new import succeeds — a failed
+            # open (unsupported file, malformed binary) must NOT leave the
+            # engine with no program at all (every API would then 409 and the
+            # whole UI dead-ends). Exception: reopening the SAME project must
+            # close its previous handle first, or Ghidra's project lock
+            # rejects the second open (LockException, poisoned engine).
+            same_project = (
+                self._project_location is not None
+                and Path(self._project_location) == pdir.resolve()
+            )
+            old_project = self.project
+            if same_project and old_project is not None:
+                if progress:
+                    progress("closing previous program")
+                try:
+                    old_project.close()
+                except Exception:  # noqa: BLE001 - best-effort cleanup
+                    pass
+                self.project = None
+                self.program = None
+                old_project = None
+            self._invalidate_caches()
+
             if (pdir / f"{pname}.rep").exists() or (pdir / f"{pname}.gpr").exists():
                 project = GhidraProject.openProject(pdir, pname, True)
             else:
@@ -247,11 +260,17 @@ class EngineManager:
                     pass
                 raise
 
+            # success — swap in the new program, THEN release the old project
             self.project = project
             self.program = program
             self.program_name = name
             self.source_path = str(src)
             self._project_location = str(pdir)
+            if old_project is not None:
+                try:
+                    old_project.close()
+                except Exception:  # noqa: BLE001 - best-effort cleanup
+                    pass
 
             if progress:
                 progress("collecting caches")

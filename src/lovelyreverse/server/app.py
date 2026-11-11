@@ -262,11 +262,11 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                 engine_ready = bool(getattr(state.engine, "_thread", None))
                 analyzing = getattr(state.engine, "open_state", "idle") == "opening"
                 progress = getattr(state.engine, "open_progress", "") or ""
-                program_loaded = False
-                try:
-                    program_loaded = state.engine.program_info() is not None
-                except Exception:  # noqa: BLE001
-                    pass
+                # Lock-free program check: this endpoint is polled while an
+                # open job runs, and every engine-thread call queues behind
+                # that job — polling program_info() here would stall the UI
+                # on the OLD project exactly when it should show progress.
+                program_loaded = getattr(state.engine, "program", None) is not None
                 return self._json({
                     "version": __version__,
                     "engine_ready": engine_ready,
@@ -515,7 +515,15 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     from lovelyreverse.util.pyinstaller import unpack
 
                     job.progress = "locating cookie"
-                    return unpack(src, progress=lambda s: setattr(job, "progress", s))
+                    # Unpack beside the sample (its _lvr/), not %TEMP% —
+                    # nothing should accumulate on the system drive.
+                    outdir = None
+                    try:
+                        outdir = p.parent / "_lvr" / "unpacked" / f"{p.stem}_{int(time.time())}"
+                        outdir.mkdir(parents=True, exist_ok=True)
+                    except OSError:
+                        outdir = None  # unwritable location → util's tempdir default
+                    return unpack(p, outdir=outdir, progress=lambda s: setattr(job, "progress", s))
 
                 return self._json({"job": state.jobs.spawn("unpack-pyinstaller", target)})
 

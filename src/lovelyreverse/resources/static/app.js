@@ -270,17 +270,33 @@ document.addEventListener("contextmenu", (e) => {
     return;
   }
 
-  // ── search-result row: disasm / refs / copy
+  // ── search-result row: depends on which index it came from
   const qrow = e.target.closest("#search-results .row");
   if (qrow && qrow.dataset.addr) {
     e.preventDefault();
     const a = parseInt(qrow.dataset.addr, 16);
-    openCtxMenu(e.clientX, e.clientY, [
+    const items = [];
+    if (qrow.dataset.kind === "string") {
+      const lit = qrow.querySelector(".name");
+      items.push(
+        { icon: "⌖", label: t("ctx.jump_ref"), title: t("ctx.jump_ref.title"), run: () => jumpStringRef(a) },
+        { icon: "⚗", label: t("ctx.decode"), run: () => sendToDecoder(lit ? lit.textContent : "", "text") },
+        "-",
+      );
+    } else if (qrow.dataset.kind === "function") {
+      items.push(
+        { icon: "⌖", label: t("ctx.decompile"), run: () => selectFunction(a, qrow.dataset.fname) },
+        { icon: "◈", label: t("ctx.graph"), run: () => { switchCenter("graph"); showGraph(a); } },
+        "-",
+      );
+    }
+    items.push(
       { icon: "⌗", label: t("ctx.disasm"), run: () => showDisasm(a) },
       { icon: "⌕", label: t("ctx.refs"), title: t("ctx.refs.title"), run: () => loadXrefs(a, { focus: true }) },
       "-",
       { icon: "⧉", label: t("ctx.copy_addr"), run: () => navigator.clipboard.writeText(hexpad(a)) },
-    ]);
+    );
+    openCtxMenu(e.clientX, e.clientY, items);
     return;
   }
 
@@ -411,6 +427,9 @@ function setBusy(b, jobLabel = "") {
 
 async function openByPath(path) {
   if (!path) return;
+  // wipe every panel FIRST — during the (potentially long) open the UI must
+  // never keep showing the previous project's strings/functions/xrefs
+  resetWorkspace(t("st.opening"));
   setBusy(true, t("job.opening"));
   logLine(`open ${path}`, "hi");
   try {
@@ -427,8 +446,21 @@ async function openByPath(path) {
   } catch (e) {
     toast(t("toast.open_fail", { err: e.message }), "error");
     logLine(`open failed: ${e.message}`, "err");
+    await recoverAfterOpenFail();
   } finally {
     setBusy(false);
+  }
+}
+
+/* A failed open must not leave the workspace showing a phantom project.
+   Re-sync with what the server actually holds: if it still has a program,
+   rebuild from it; if not, back to the clean empty state. */
+async function recoverAfterOpenFail() {
+  try {
+    await api("program");
+    await loadProgram();
+  } catch {
+    resetWorkspace();
   }
 }
 
@@ -445,6 +477,10 @@ async function uploadAndOpen(file) {
     if (!res.ok) throw new Error(`upload failed: HTTP ${res.status}`);
     const { path } = await res.json();
     $("#path-input").value = path;
+    // uploads are copies (the browser never reveals the original path) — say
+    // so, and point at the path bar for in-place analysis
+    logLine(`${t("toast.upload_copied")} ${path}`, "hi");
+    toast(t("toast.upload_copied"), "info", 5200);
     await openByPath(path);
   } catch (e) {
     toast(e.message, "error");
@@ -470,18 +506,19 @@ function pollJob(id, onTick) {
   });
 }
 
-async function loadProgram() {
-  S.program = await api("program");
-  S.triage = await api("triage");
-  // B6: a fresh program must not inherit the previous one's panels
+/* Wipe every panel so no project's data ever leaks into another's view
+   (the "opening shows the previous project's strings" complaint). Used at
+   open start, on open failure recovery, and before loadProgram rebuilds. */
+function resetWorkspace(statusMsg) {
+  S.program = null;
+  S.triage = null;
   S.currentFunc = null;
   S.selectedString = null;
   S.ops = [];
   renderOps();
   $("#hero").classList.add("hidden");
-  $("#st-program").textContent = S.program.name;
-  renderVerdict();
-  engineState("ready");
+  $("#st-program").textContent = statusMsg || t("st.noprogram");
+  renderVerdict();   // handles S.triage == null → "nothing loaded"
   $("#decompile-title").textContent = t("decompile.title.none");
   $("#code-decompile").innerHTML = `<div class="code-empty">${esc(t("code.empty.dec"))}</div>`;
   $("#disasm-title").textContent = t("code.title.none");
@@ -489,7 +526,13 @@ async function loadProgram() {
   for (const id of ["btn-copy-code", "btn-download-code", "btn-rename-fn", "btn-note-fn"])
     $(`#${id}`).classList.add("hidden");
   $("#xrefs-target").textContent = "—";
+  $("#xrefs-target").removeAttribute("data-addr");
   $("#xrefs-info").innerHTML = `<div class="insp-empty">${esc(t("insp.select"))}</div>`;
+  $("#constants-info").innerHTML = `<div class="insp-empty">${esc(t("insp.constants.hint"))}</div>`;
+  $("#count-constants").textContent = "";
+  $("#program-info").innerHTML = `<div class="insp-empty">${esc(t("insp.nothing"))}</div>`;
+  $("#sections-info").innerHTML = "";
+  $("#overlay-info").innerHTML = "";
   $("#graph-info").textContent = t("graph.info.none");
   $("#graph-stats").textContent = "";
   G.rawNodes = new Map(); G.rawEdges = new Set();
@@ -503,6 +546,23 @@ async function loadProgram() {
   $("#list-strings").innerHTML = "";
   $("#count-strings").textContent = "";
   $("#st-str").textContent = "";
+  $("#search-results").innerHTML = `<div class="code-empty">${esc(t("search.hint"))}</div>`;
+  $("#search-info").textContent = "";
+}
+
+async function loadProgram() {
+  // fetch first, wipe second: resetWorkspace() nulls S.program/S.triage, so
+  // the freshly fetched data must be re-installed AFTER the wipe or every
+  // load dies with "Cannot read properties of null" and the workspace stays
+  // stuck on the empty state (regression caught by the open-path E2E)
+  const prog = await api("program");
+  const tri = await api("triage");
+  resetWorkspace();
+  S.program = prog;
+  S.triage = tri;
+  engineState("ready");
+  $("#st-program").textContent = prog.name;
+  renderVerdict();
   renderProgramInfo();
   renderSections();
   renderOverlay();
@@ -991,38 +1051,64 @@ async function readHex() {
 /* ═══════════════════════ decoder lab ═══════════════════════ */
 
 const OPS = [
-  { op: "to_hex", label: "Hex → encode", args: [["sep", "str", "e.g. ' '"], ["upper", "bool"]] },
-  { op: "from_hex", label: "Hex → decode", args: [] },
-  { op: "to_base64", label: "Base64 → encode", args: [["urlsafe", "bool"]] },
-  { op: "from_base64", label: "Base64 → decode", args: [] },
-  { op: "to_base32", label: "Base32 → encode", args: [] },
-  { op: "from_base32", label: "Base32 → decode", args: [] },
-  { op: "to_ascii85", label: "Ascii85 → encode", args: [] },
-  { op: "from_ascii85", label: "Ascii85 → decode", args: [] },
-  { op: "url_encode", label: "URL → encode", args: [] },
-  { op: "url_decode", label: "URL → decode", args: [] },
-  { op: "rot", label: "ROT-n", args: [["n", "int", 13]] },
-  { op: "rot47", label: "ROT47", args: [["n", "int", 47]] },
-  { op: "xor", label: "XOR repeating key", args: [["key", "str", "ATRI"], ["hex", "bool"]] },
-  { op: "xor_pos", label: "XOR with offset", args: [["key", "str", "00"], ["offset", "int", 0], ["hex", "bool"]] },
-  { op: "rc4", label: "RC4", args: [["key", "str", "secret"]] },
-  { op: "reverse", label: "Reverse bytes", args: [] },
-  { op: "bit_not", label: "NOT bits", args: [] },
-  { op: "c_escape", label: "C escape", args: [] },
-  { op: "c_unescape", label: "C unescape", args: [] },
-  { op: "hexdump", label: "Hexdump", args: [] },
-  { op: "gzip_decompress", label: "GZip decompress", args: [] },
-  { op: "gzip_compress", label: "GZip compress", args: [] },
-  { op: "zlib_decompress", label: "Zlib decompress", args: [] },
-  { op: "zlib_compress", label: "Zlib compress", args: [] },
-  { op: "raw_inflate", label: "Raw inflate", args: [] },
-  { op: "md5", label: "MD5", args: [] },
-  { op: "sha1", label: "SHA-1", args: [] },
-  { op: "sha256", label: "SHA-256", args: [] },
+  { op: "to_hex", label: "Hex → encode", zh: "Hex 编码", args: [["sep", "str", "e.g. ' '"], ["upper", "bool"]] },
+  { op: "from_hex", label: "Hex → decode", zh: "Hex 解码", args: [] },
+  { op: "to_base64", label: "Base64 → encode", zh: "Base64 编码", args: [["urlsafe", "bool"]] },
+  { op: "from_base64", label: "Base64 → decode", zh: "Base64 解码", args: [] },
+  { op: "to_base32", label: "Base32 → encode", zh: "Base32 编码", args: [] },
+  { op: "from_base32", label: "Base32 → decode", zh: "Base32 解码", args: [] },
+  { op: "to_ascii85", label: "Ascii85 → encode", zh: "Ascii85 编码", args: [] },
+  { op: "from_ascii85", label: "Ascii85 → decode", zh: "Ascii85 解码", args: [] },
+  { op: "url_encode", label: "URL → encode", zh: "URL 编码", args: [] },
+  { op: "url_decode", label: "URL → decode", zh: "URL 解码", args: [] },
+  { op: "rot", label: "ROT-n", zh: "ROT-n 移位", args: [["n", "int", 13]] },
+  { op: "rot47", label: "ROT47", zh: "ROT47 移位", args: [["n", "int", 47]] },
+  { op: "xor", label: "XOR repeating key", zh: "XOR 重复密钥", args: [["key", "str", "ATRI"], ["hex", "bool"]] },
+  { op: "xor_pos", label: "XOR with offset", zh: "XOR 位置偏移", args: [["key", "str", "00"], ["offset", "int", 0], ["hex", "bool"]] },
+  { op: "rc4", label: "RC4", zh: "RC4", args: [["key", "str", "secret"]] },
+  { op: "reverse", label: "Reverse bytes", zh: "字节反转", args: [] },
+  { op: "bit_not", label: "NOT bits", zh: "按位取反", args: [] },
+  { op: "c_escape", label: "C escape", zh: "C 转义", args: [] },
+  { op: "c_unescape", label: "C unescape", zh: "C 反转义", args: [] },
+  { op: "hexdump", label: "Hexdump", zh: "Hexdump 视图", args: [] },
+  { op: "gzip_decompress", label: "GZip decompress", zh: "GZip 解压", args: [] },
+  { op: "gzip_compress", label: "GZip compress", zh: "GZip 压缩", args: [] },
+  { op: "zlib_decompress", label: "Zlib decompress", zh: "Zlib 解压", args: [] },
+  { op: "zlib_compress", label: "Zlib compress", zh: "Zlib 压缩", args: [] },
+  { op: "raw_inflate", label: "Raw inflate", zh: "Raw inflate 解压", args: [] },
+  { op: "md5", label: "MD5", zh: "MD5", args: [] },
+  { op: "sha1", label: "SHA-1", zh: "SHA-1", args: [] },
+  { op: "sha256", label: "SHA-256", zh: "SHA-256", args: [] },
 ];
 
+/* op names follow the UI language (zh labels added 2026-11: "decoding lab confusing" feedback) */
+function opLabel(spec) {
+  return (LV_LANG === "zh" && spec.zh) ? spec.zh : spec.label;
+}
+
+/* one-click recipes — the "how do I even use this" answer.
+   b64 keeps mode text (the base64 characters ARE the input), hex preset only
+   flips the input mode — from_hex on top of hex-mode input would decode twice. */
+const DEC_PRESETS = {
+  b64:     { ops: [{ op: "from_base64", args: {} }], mode: "text" },
+  hex:     { ops: [], mode: "hex" },
+  rot13:   { ops: [{ op: "rot", args: { n: "13" } }], mode: "text" },
+  reverse: { ops: [{ op: "reverse", args: {} }], mode: "text" },
+};
+
+function applyPreset(key) {
+  const p = DEC_PRESETS[key];
+  if (!p) return;
+  S.ops = p.ops.map((o) => ({ op: o.op, args: { ...o.args } }));
+  renderOps();
+  const radio = document.querySelector(`input[name="dec-mode"][value="${p.mode}"]`);
+  if (radio) radio.checked = true;
+  runChain();
+}
+
 function renderOpSelect() {
-  $("#op-select").innerHTML = OPS.map((o, i) => `<option value="${i}">${esc(o.label)}</option>`).join("");
+  $("#op-select").innerHTML = OPS.map((o, i) =>
+    `<option value="${i}">${esc(opLabel(o))}</option>`).join("");
 }
 
 function renderOps() {
@@ -1036,7 +1122,7 @@ function renderOps() {
       return `<span class="op-arg">${name}<input data-i="${i}" data-arg="${name}" value="${esc(String(v))}"></span>`;
     }).join("");
     return `<div class="op-item">
-      <span class="op-arrow">${i + 1}.</span><span class="op-name">${esc(spec.label)}</span>
+      <span class="op-arrow">${i + 1}.</span><span class="op-name">${esc(opLabel(spec))}</span>
       <span class="op-args">${args}</span>
       <span class="spring"></span>
       <button class="op-rm" data-rm="${i}" title="remove">✕</button>
@@ -1143,29 +1229,94 @@ async function xorDerive() {
   } catch (e) { toast(e.message, "error"); }
 }
 
-/* ═══════════════════════ search ═══════════════════════ */
+/* ═══════════════════════ search ═══════════════════════
+   One box, three indexes: a plain query searches STRING LITERALS and
+   FUNCTION NAMES (the RE anchors), an even-length hex pattern additionally
+   searches raw memory bytes. Results are grouped; clearing the box restores
+   the empty state (it used to stick with the last hits). */
+
+function looksLikeHexPat(s) {
+  const t = s.replace(/0x/gi, "").replace(/[\s,:-]/g, "");
+  return /^[0-9a-fA-F]+$/.test(t) && t.length % 2 === 0;
+}
+
+function searchGroup(title, rowsHtml) {
+  if (!rowsHtml) return "";
+  return `<div class="search-group"><div class="search-group-label">${esc(title)}</div>${rowsHtml}</div>`;
+}
 
 async function runSearch() {
-  const pat = $("#search-hex").value.trim();
+  const pat = $("#search-q").value.trim();
   const box = $("#search-results");
-  if (!pat) return;
+  if (!pat) {                       // cleared input → restore the empty state
+    box.innerHTML = `<div class="code-empty">${esc(t("search.hint"))}</div>`;
+    $("#search-info").textContent = "";
+    return;
+  }
   box.innerHTML = `<div class="loading">${esc(t("list.loading.search"))}</div>`;
   $("#search-info").textContent = "";
-  try {
-    const res = await api(`search?hex=${encodeURIComponent(pat)}&limit=400`);
-    $("#search-info").textContent = t("search.hits", { n: res.items.length });
-    if (!res.items.length) { box.innerHTML = `<div class="code-empty">${esc(t("search.nohits"))}</div>`; return; }
-    box.innerHTML = "";
-    for (const h of res.items) {
-      const row = document.createElement("div");
-      row.className = "row";
-      row.tabIndex = 0;
-      row.dataset.addr = h.addr;
-      row.innerHTML = `<span class="addr">${hexpad(h.addr)}</span><span class="name">${esc(h.block)}</span><span class="meta">${esc(h.function || "")}</span>`;
-      row.onclick = () => showDisasm(h.addr);
-      box.appendChild(row);
-    }
-  } catch (e) { box.innerHTML = `<div class="code-empty">${esc(e.message)}</div>`; }
+
+  const hexMode = looksLikeHexPat(pat);
+  // strings + function names are useful even for a hex-looking query
+  const strP = api(`strings?q=${encodeURIComponent(pat)}&limit=200`)
+    .catch(() => ({ items: [], total: 0 }));
+  const fnP = api(`functions?q=${encodeURIComponent(pat)}&offset=0&limit=100`)
+    .catch(() => ({ items: [], total: 0 }));
+  const memP = hexMode
+    ? api(`search?hex=${encodeURIComponent(pat)}&limit=200`).catch(() => ({ items: [] }))
+    : Promise.resolve({ items: [] });
+  const [strRes, fnRes, memRes] = await Promise.all([strP, fnP, memP]);
+
+  let html = "";
+  // strings — the anchor of the solving chain: click → xrefs, dblclick → jump
+  let rows = "";
+  for (const s of strRes.items) {
+    rows += `<div class="row" tabindex="0" data-kind="string" data-addr="${s.addr.toString(16)}">
+      <span class="addr">${hexpad(s.addr)}</span><span class="name lit">${esc(s.value)}</span><span class="meta">${s.length}</span>
+    </div>`;
+  }
+  html += searchGroup(t("search.group.strings", { n: strRes.total ?? strRes.items.length }), rows);
+
+  // function names — click → decompile
+  rows = "";
+  for (const f of fnRes.items) {
+    rows += `<div class="row" tabindex="0" data-kind="function" data-addr="${f.addr.toString(16)}" data-fname="${esc(f.name)}">
+      <span class="addr">${hexpad(f.addr)}</span><span class="name">${esc(f.name)}</span><span class="meta">${f.size}</span>
+    </div>`;
+  }
+  html += searchGroup(t("search.group.functions", { n: fnRes.total ?? fnRes.items.length }), rows);
+
+  // raw memory bytes (only for a hex-shaped pattern)
+  rows = "";
+  for (const h of memRes.items || []) {
+    rows += `<div class="row" tabindex="0" data-kind="mem" data-addr="${h.addr.toString(16)}">
+      <span class="addr">${hexpad(h.addr)}</span><span class="name">${esc(h.block)}</span><span class="meta">${esc(h.function || "")}</span>
+    </div>`;
+  }
+  html += searchGroup(t("search.group.mem", { n: (memRes.items || []).length }), rows);
+
+  if (!html) {
+    box.innerHTML = `<div class="code-empty">${esc(t("search.nohits"))}</div>`;
+    $("#search-info").textContent = t("search.hits.none");
+    return;
+  }
+  box.innerHTML = html;
+  const nAll = (strRes.total ?? strRes.items.length) + (fnRes.total ?? fnRes.items.length) + (memRes.items || []).length;
+  $("#search-info").textContent = t("search.hits", { n: nAll });
+
+  box.querySelectorAll('.row[data-kind="string"]').forEach((row) => {
+    const a = parseInt(row.dataset.addr, 16);
+    row.onclick = () => loadXrefs(a, { focus: true });
+    row.ondblclick = () => jumpStringRef(a);
+  });
+  box.querySelectorAll('.row[data-kind="function"]').forEach((row) => {
+    const a = parseInt(row.dataset.addr, 16);
+    row.onclick = () => selectFunction(a, row.dataset.fname);
+  });
+  box.querySelectorAll('.row[data-kind="mem"]').forEach((row) => {
+    const a = parseInt(row.dataset.addr, 16);
+    row.onclick = () => showDisasm(a);
+  });
 }
 
 /* ═══════════════════════ decompile-all ═══════════════════════ */
@@ -1741,6 +1892,15 @@ function looksBinary(bytes, name = "") {
   return odd / n > 0.08;
 }
 
+/* Only PE / ELF images can be imported by Ghidra — gating the button on the
+   magic bytes prevents the "send a .manifest/.pyc to Ghidra" dead end that
+   used to fail the open AND empty the engine. */
+function isExecImage(bytes) {
+  if (bytes.length >= 2 && bytes[0] === 0x4d && bytes[1] === 0x5a) return true;                    // MZ → PE
+  if (bytes.length >= 4 && bytes[0] === 0x7f && bytes[1] === 0x45 && bytes[2] === 0x4c && bytes[3] === 0x46) return true; // ELF
+  return false;
+}
+
 async function openUnpackModal() {
   openModal("#modal-unpack");
   $("#unpack-ghidra").classList.add("hidden");
@@ -1787,17 +1947,22 @@ function renderUnpackResult(m) {
 async function previewUnpackedFile(name) {
   unpackPreviewName = name;
   const prev = $("#unpack-preview");
+  const ghidraBtn = $("#unpack-ghidra");
   prev.textContent = "…";
+  ghidraBtn.classList.add("hidden");
   try {
     const res = await api(`unpack/file?job=${encodeURIComponent(unpackJob)}&name=${encodeURIComponent(name)}`);
     const bytes = b64ToBytes(res.data_b64);
-    if (looksBinary(bytes, name)) {
-      prev.textContent = t("unpack.bin");
-      $("#unpack-ghidra").classList.remove("hidden");
+    if (isExecImage(bytes)) {
+      if (looksBinary(bytes, name)) prev.textContent = t("unpack.bin");
+      else prev.textContent = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+      ghidraBtn.classList.remove("hidden");
       return;
     }
-    prev.textContent = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-    $("#unpack-ghidra").classList.remove("hidden");
+    // not an executable image: preview text if readable, otherwise explain —
+    // but never offer "send to Ghidra" for it
+    if (looksBinary(bytes, name)) prev.textContent = t("unpack.bin.noexec");
+    else prev.textContent = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
   } catch (e) { prev.textContent = e.message; }
 }
 
@@ -1925,6 +2090,8 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // re-render translated dynamic text when the language flips
   document.addEventListener("lv:langchange", () => {
+    renderOpSelect();   // op names follow the UI language
+    renderOps();
     if (S.program) {
       renderProgramInfo();
       renderVerdict();
@@ -2046,10 +2213,17 @@ window.addEventListener("DOMContentLoaded", async () => {
   };
   $("#btn-xor-brute").onclick = xorBrute;
   $("#btn-xor-derive").onclick = xorDerive;
+  $("#dec-presets").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-preset]");
+    if (!b) return;
+    // xorbrute is a brute-force action, not a chain recipe — route it to xorBrute()
+    if (b.dataset.preset === "xorbrute") { xorBrute(); return; }
+    applyPreset(b.dataset.preset);
+  });
 
   // search
   $("#btn-search").onclick = runSearch;
-  $("#search-hex").addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
+  $("#search-q").addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
 
   // drawer toggle — `open`/`closed` are mutually exclusive (the hero's
   // body:has(#drawer.open) rule relies on it; stale `.open` used to keep the

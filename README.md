@@ -41,18 +41,19 @@
 | **⊞ memory hex** | 按内存块原始读取，翻页/跳偏移；一键送入解码实验室 |
 | **strings** | Ghidra 识别的字符串，一键送入解码实验室；**单击查引用（谁在用它），双击直接跳进引用函数的反编译并高亮那一行** |
 | **imports / exports** | 导入函数（含所属库）与导出入口；**点导入即查调用者**（thunk xref → caller → 反编译） |
-| **inspector** | 程序信息（格式/架构/编译器/基址）、**查壳 · 结论面板**（区段签名 / 节区熵 / 附加数据五档判定）、节区熵值条、**Overlay 附加数据检测**（MinGW COFF 符号表自动排除）、交叉引用、加密常量命中、**PyInstaller 一键解包** |
+| **inspector** | **交叉引用卡片置顶**（做题链的脊梁：地址 + 函数名单行展示，超长自动省略，不再互相遮挡）、程序信息（格式/架构/编译器/基址）、**查壳 · 结论面板**（区段签名 / 节区熵 / 附加数据五档判定）、节区熵值条、**Overlay 附加数据检测**（MinGW COFF 符号表自动排除）、加密常量命中、**PyInstaller 一键解包** |
 
 ### CTF 特化（本工具的存在意义）
 
 - **做题链联动**（照着真实解题流程做：查壳 → 字符串锚点 → 交叉引用 → 反编译）：查壳结论面板给出方向（干净 / 疑似加壳 + 下一步提示）；字符串单击看「谁在用它」，双击跳进反编译的**精确引用行**；导入点击直达调用者。**全站右键菜单**（10 类对象：反编译符号 / 选中内容 / xref 行 / 常量行 / 函数行 / 字符串 / 导入 / 导出 / 搜索结果 / 汇编行）——跳转、查引用、反汇编、跟随跳转、送解码、重命名、备注、复制，全是快捷入口。字符串和代码不再是两个孤岛。
 - **加密常量识别**（FindCrypt 精髓）：内置 40+ 签名——AES S-box/Te0、SM4 S-box/FK、SM3 IV、MD5/SHA-1/SHA-256/SHA-512 IV 与 K 表、Blowfish P 数组、Camellia σ、TEA/XTEA δ、ChaCha σ、Base64/32/Uuencode 字母表、CRC 表、ECC 域素数（程序化生成，零抄写错误）。自动展开大小端双变体，命中自动归属到函数。打开一个带 AES 的 crackme，`.rdata` 里的 S-box 直接标出来。
-- **解码实验室**（CyberChef 精髓）：28 种操作**链式**叠加（hex/base64/base32/ascii85/URL/ROT-n/ROT47/XOR/RC4/位反转/C 转义/gzip/zlib/raw inflate/MD5/SHA-1/SHA-256…），输入支持 text/hex/b64 三种模式。
+- **统一搜索**（底部 ⌕ 搜索页签）：一个输入框同时搜**字符串、函数名**，粘贴偶数位 hex 自动追加**内存字节**搜索；点字符串命中直达交叉引用，点函数命中直接反编译，清空输入框即还原空态。
+- **解码实验室**（CyberChef 精髓）：28 种操作**链式**叠加（hex/base64/base32/ascii85/URL/ROT-n/ROT47/XOR/RC4/位反转/C 转义/gzip/zlib/raw inflate/MD5/SHA-1/SHA-256…），输入支持 text/hex/b64 三种模式；**一键预设**（Base64 / Hex / ROT13 / 字节反转 / XOR 爆破）+ 操作中文标签 + 空链使用指引，打开就知道怎么用。
 - **XOR 工具箱**：
   - 单字节爆破 + 可打印评分排序（`⛨ xor brute`）
   - **已知明文推密钥**（`⛭ derive key`）：输入 `flag{` 前缀，直接算出循环 XOR 密钥（含周期一致性检查）
 - **Overlay / 熵分析**（binwalk 精髓）：纯 Python 解析 PE/ELF 节表，`end_of_raw` 之后的数据判为 overlay；逐节香农熵 + 全文件熵剖面，加壳一眼可见。
-- **PyInstaller 一键解包**（pyinstxtractor 内置化）：识别 CArchive cookie，解出全部条目与 PYZ 模块，pyc 头自动补齐（PEP 552），入口脚本置顶，预览后可直接送 Ghidra 分析。
+- **PyInstaller 一键解包**（pyinstxtractor 内置化）：识别 CArchive cookie，解出全部条目与 PYZ 模块，pyc 头自动补齐（PEP 552），入口脚本置顶，解包结果落在样本旁 `_lvr/unpacked/`；**只有 MZ/ELF 可执行条目提供「送 Ghidra」**（`.manifest`/`.pyc` 等只读预览），杜绝把非可执行文件塞进引擎导致打开失败。
 - **批量反编译**：一键把全部函数导出为 zip（每个函数一个 `.c`）。
 
 <p align="center">
@@ -88,7 +89,7 @@
 
 - 学习笔记中的 `ez_debug` 密文，解码链 `[xor ATRI] → [xor 17]` 直接解出 `flag{y0u_ar3_g0od_@_Debu9}`
 - gcc 编译的 crypto_demo 常量扫描 **5/5 命中、零误报**，TEA δ 正确归属 `tea_encrypt`（引擎测试固化）
-- 题库 `pyre.exe`（PyInstaller 打包题）：overlay 自动识别，解包 **60 个条目 · PYZ 133 模块**，入口脚本 `1.pyc` pyc magic 修复后可直接预览 / 送 Ghidra
+- 题库 `pyre.exe`（PyInstaller 打包题）：overlay 自动识别，解包 **60 个条目 · PYZ 133 模块**，入口脚本 `1.pyc` pyc magic 修复后可直接预览；MZ/ELF 条目（如 `VCRUNTIME140.dll`）一键送 Ghidra
 
 <p align="center">
   <img src="docs/screenshots/unpack.png" width="72%" alt="PyInstaller unpack modal">
@@ -133,7 +134,7 @@ lvr serve
 python -m lovelyreverse serve
 ```
 
-浏览器自动打开 `http://127.0.0.1:7331`。界面默认**中文 + 浅色主题**（右上角 ⚙ 设置里可切 English / 石墨玫瑰暗色）。把二进制拖进页面、点 ⌖ 打开二进制、或粘贴绝对路径回车——第一次打开一个样本需要跑 Ghidra 自动分析（小文件几十秒），之后秒开。
+浏览器自动打开 `http://127.0.0.1:7331`。界面默认**中文 + 浅色主题**（右上角 ⚙ 设置里可切 English / 石墨玫瑰暗色）。三种打开方式：拖文件进页面 / 点 ⌖ 打开二进制 / **粘贴绝对路径回车**。拖入和文件选择走浏览器上传（浏览器拿不到文件的原始位置），会复制到数据目录再分析；**粘贴绝对路径则就地分析**——Ghidra 工程 `_lvr/` 建在样本旁边，不动你的文件。第一次打开一个样本需要跑 Ghidra 自动分析（小文件几十秒），之后秒开。
 
 Ghidra 安装位置按以下顺序发现：`--ghidra <路径>` → `GHIDRA_INSTALL_DIR` 环境变量 → 常见目录自动扫描（`~/Downloads`、`~/Desktop`、`~/tools`、`D:/Tools`、`C:/ghidra`、`/opt`、`/usr/local` 等）。
 

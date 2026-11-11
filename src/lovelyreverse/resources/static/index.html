@@ -148,6 +148,15 @@
     <div class="tabbar"><span class="tab active static" data-i18n="insp.title">inspector</span></div>
     <div class="inspector">
 
+      <!-- xrefs first: it is the spine of the solving chain (string → refs →
+           code), not a side note at the bottom of a long scroll -->
+      <div class="insp-group insp-xrefs-card" id="insp-xrefs">
+        <h3><span data-i18n="insp.xrefs">xrefs ·</span> <span id="xrefs-target">—</span>
+          <button class="btn btn-ghost btn-xs" id="btn-show-graph" data-i18n="insp.graph.btn" data-i18n-title="insp.graph.btn.title" title="open call graph">◈ graph</button>
+        </h3>
+        <div class="insp-body" id="xrefs-info"><div class="insp-empty" data-i18n="insp.select">select a function</div></div>
+      </div>
+
       <div class="insp-group" id="insp-verdict">
         <h3 data-i18n="insp.verdict">verdict · 查壳</h3>
         <div class="insp-body" id="verdict-info"><div class="insp-empty" data-i18n="insp.nothing">nothing loaded</div></div>
@@ -166,13 +175,6 @@
       <div class="insp-group" id="insp-overlay">
         <h3 data-i18n="insp.overlay">overlay</h3>
         <div class="insp-body" id="overlay-info"></div>
-      </div>
-
-      <div class="insp-group" id="insp-xrefs">
-        <h3><span data-i18n="insp.xrefs">xrefs ·</span> <span id="xrefs-target">—</span>
-          <button class="btn btn-ghost btn-xs" id="btn-show-graph" data-i18n="insp.graph.btn" data-i18n-title="insp.graph.btn.title" title="open call graph">◈ graph</button>
-        </h3>
-        <div class="insp-body" id="xrefs-info"><div class="insp-empty" data-i18n="insp.select">select a function</div></div>
       </div>
 
       <div class="insp-group" id="insp-constants">
@@ -197,6 +199,14 @@
   <div class="tabbody" id="drawer-body">
     <!-- decoder lab -->
     <div class="tabpane active" data-pane="decoder">
+      <div class="dec-presets" id="dec-presets">
+        <span class="dec-presets-label" data-i18n="dec.presets.label">One-click:</span>
+        <button class="chip" data-preset="b64" data-i18n="dec.preset.b64">Base64 decode</button>
+        <button class="chip" data-preset="hex" data-i18n="dec.preset.hex">Hex decode</button>
+        <button class="chip" data-preset="rot13" data-i18n="dec.preset.rot13">ROT13</button>
+        <button class="chip" data-preset="reverse" data-i18n="dec.preset.reverse">Reverse bytes</button>
+        <button class="chip" data-preset="xorbrute" data-i18n="dec.preset.xorbrute">⛨ XOR brute-force</button>
+      </div>
       <div class="decoder-grid">
         <div class="dec-col">
           <div class="dec-label"><span data-i18n="dec.input">input</span> <span class="dim" id="dec-in-size"></span>
@@ -240,11 +250,11 @@
     <!-- search -->
     <div class="tabpane" data-pane="search">
       <div class="search-bar">
-        <input id="search-hex" type="text" spellcheck="false" data-i18n-ph="search.ph" placeholder="hex byte pattern, e.g. 63 7c 77 7b or 637c777b" />
-        <button class="btn btn-primary btn-xs" id="btn-search" data-i18n="search.btn">⌕ search memory</button>
+        <input id="search-q" type="text" spellcheck="false" data-i18n-ph="search.ph" placeholder="Search strings / function names; paste hex bytes to search memory too" />
+        <button class="btn btn-primary btn-xs" id="btn-search" data-i18n="search.btn">⌕ search</button>
         <span class="dim" id="search-info"></span>
       </div>
-      <div class="list wide" id="search-results"></div>
+      <div class="list wide" id="search-results"><div class="code-empty" data-i18n="search.hint">Type keywords (part of a string or function name), or paste an even-length hex byte pattern to search raw memory. Enter to run; clearing the box resets.</div></div>
     </div>
 
     <!-- log -->

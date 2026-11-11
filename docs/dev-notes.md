@@ -18,6 +18,7 @@
 | 测试 | ✅ 125 个（118 不需要 Ghidra + 7 个引擎集成），全量 72.85s |
 | CI workflow | ✅ 写好 |
 | README | ✅ 完成（五张截图已用 v0.3.0 界面重拍，browser-use 后台直存 `docs/screenshots/`） |
+| UX 批量修复（v0.3.0 发布后 6 项实测反馈） | ✅ 完成，E2E 23 项全绿（打开残留/卡顿、xref 卡片置顶、解码预设+统一搜索、解包链、上传语义） |
 
 ## v0.2.0 变更摘要
 
@@ -55,6 +56,17 @@
 - `/api/program` 新增 `project_dir` 字段，inspector「程序信息」显示工程目录行（用户能看到工程建在哪）。
 - 二次打开同一样本 = 打开已有 `.gpr` 直接 openProgram，秒级——分析结果就地复用，与样本同进退（删样本目录即清理）。
 
+## UX 批量修复（v0.3.0 发布后，2026-11-11）
+
+六项真实做题反馈，根因与修法（E2E：C:\Users\50812\AppData\Local\Temp\e2e_ux.py，headless Edge 1920×1080，23 项断言全绿）：
+
+1. **打开残留 + 切换卡顿**（反馈①）：`/api/status` 原来调 `engine.program_info()`（引擎线程派发）→ open 期间 status 轮询排队，UI 卡在前一个项目。改为锁外 `getattr(engine, "program", None)` 读内存字段；`openByPath` 先 `resetWorkspace()` 清空全部面板再提交任务；失败走 `recoverAfterOpenFail()` 与服务器实态对齐（服务器还有程序就重建，没有就回到干净空态）。
+2. **交叉引用文字互遮 + 要独立区块**（反馈②，用户强调「很重要」）：根因 flex 子项默认 `min-width:auto`，长地址/函数名溢出压到隔壁列。`xref-addr` 不收缩、`xref-name` `min-width:0 + text-overflow:ellipsis`；`insp-xrefs` 整组移到 inspector **首位**并卡片化（做题链的脊梁该最先看到）。
+3. **解码实验室没搞懂怎么用**（反馈③）：输入区上方加**一键预设 chips**（Base64 / Hex / ROT13 / 字节反转 / XOR 爆破），28 种操作全部加中文标签，空链提示改成三步用法指引。注意 xorbrute 是**动作不是链**——点击路由到 `xorBrute()`，不进 DEC_PRESETS。
+4. **搜索不能搜字符串 + 清空不还原**（反馈③/⑤）：搜索页签原来是 hex-only。改成**三索引统一搜索**：字符串（/api/strings?q=）+ 函数名（/api/functions?q=）+ 偶数位 hex 自动追加内存字节，分组展示，点字符串命中直达 xref、点函数命中直接反编译；**输入为空不再 early-return**，还原空态提示。左列字符串过滤清空还原同理（250ms debounce）。
+5. **解包链全断**（反馈④）：一个根因——`_open_job` **先关旧工程再导入新文件**，把 .manifest/.pyc 这类非可执行文件送给 Ghidra 导入失败后引擎裸奔，所有 API 409 →「所有函数看不了反编译、所有二进制看不了、导入失败」全是它的表现。改为**导入成功后再关旧工程**（同工程重开仍先关——项目锁约束）；「送 Ghidra」按钮按 MZ/ELF 魔数门控，manifest 等文本条目保留可读预览，.pyc 等二进制条目给 noexec 提示。
+6. **直接打开还在写 C 盘**（反馈⑤补充）：浏览器上传拿不到原始路径，复制到数据目录是唯一可行路径（保留但 toast 讲清楚「要就地分析请粘贴绝对路径」）；真正的回归是**解包输出默认 %TEMP%**——现在跟样本走（`<样本目录>/_lvr/unpacked/<名>_<时间戳>`，不可写再回退 tempdir）。路径直开的工程本就建在样本旁 `_lvr/`（上一批已做），实测确认。
+
 ## 已知问题（按优先级）
 
 1. **常量扫描弱签名**：4 字节签名（如 `AES Rcon[1..4] (BE)`、`CRC-32 poly (LE)`）在任意样本上可能巧合命中（crackme_easy、flower、NotNormalExe 均有此类误报）。constants.py 目前没有最短长度过滤。
@@ -80,6 +92,10 @@
 10. **`tri.max_entropy` 曾是幽灵字段**：前端读它但后端 triage() 从没提供过 → 熵分支永远不触发。前后端字段约定要有测试钉住。
 11. **Ghidra 项目路径元素不许以点开头**：`GhidraProject.createProject(dir, ".lvr", …)` 直接抛 `InvalidProjectNameException: Path element starting with '.' is not permitted`。目录名用 `_lvr`。另外 Git Bash 会把中文路径的 env 变量/参数搞乱码（sample 路径带中文时别用 bash 传），用 Python 的 glob 自己找文件。
 12. **drawer 状态类的两个隐藏坑（重拍截图时暴露）**：① `--drawer-h` 从未被任何规则/JS 赋值，grid 高度公式 `calc(100vh - 46px - 24px - var(--drawer-h, 236px))` 永远按 236 扣——`#drawer.closed` 用 `!important` 缩到 32px 后，状态栏下方留 ~204px 死白。修：`body:has(#drawer.closed) { --drawer-h: 32px }`。② HTML 初始 `class="open"`，toggle 只加减 `closed`，两个类并存 → `body:has(#drawer.open) #hero{display:none}` 永远命中，**收起抽屉后空态 hero 回不来**。修：toggle 里让 open/closed 互斥（sendToDecoder 展开时同步补回 open）。教训：同一个状态用两个类表达必然漂移，状态类要么互斥维护、要么只留一个。
+13. **resetWorkspace 进 loadProgram = 自我清空（UX 批次 E2E 抓的）**：把「打开残留」修复重构成公共 `resetWorkspace()` 后顺手塞进 `loadProgram`，忘了它会把 `S.program/S.triage` 置 null——下一行 `S.program.name` 直接 TypeError，被 `openByPath` 的 catch 静默吞掉走恢复分支，恢复分支再调 loadProgram 再炸，最终 `#st-program` 卡死在「未加载程序」，**console 一个报错都没有**（catch 只进了 toast + 日志页签）。API 层全绿手动测不出来，UI 路径 E2E 一跑就现形。教训：①清空状态的函数别复用进「重建状态」的流程，要么把数据获取放清理之前、清理后重装；②静默 catch 必须有日志落点，否则查无可查。
+14. **不同工程的打开顺序：先导入后关旧**：GhidraProject 持磁盘锁，**同工程**重开必须先 close 再 open；但**不同工程**若也先关旧，导入一旦失败（用户把 .manifest/.pyc 塞给 Ghidra）引擎就裸奔——所有 API 409，前端表现为「解包后所有函数看不了反编译、所有二进制导入失败」，看似三个 bug 实为一个根因。修：不同工程先导入、成功后再关旧（`old_project.close()` 挪到状态赋值之后）。
+15. **面板状态机必须有空态**：搜索页签原为 hex-only 且输入为空 early-return → 上一次结果死在面板里「直接用不了」；字符串过滤同病。修法不是只补还原逻辑，而是给每个面板定义「空态该显示什么」（search.hint / 完整列表），输入变化必然落到两个合法态之一。三索引统一搜索（字符串/函数名/偶数位 hex 搜内存）是同一批补的衔接。
+16. **上传的物理限制要讲给用户听**：浏览器 file input 只给内容不给路径，「直接打开二进制还在写 C 盘」的真凶是上传必然复制到数据目录 + 解包输出默认 %TEMP%。修法：解包输出跟样本走（`_lvr/unpacked/`，不可写再回退）；toast 讲清楚「要就地分析请粘贴绝对路径」。跟用户解释前先分清「设计如此（但要说明）」和「真回归」。
 
 ## 调用图实现（v0.1.0 重写，机制未变）
 
@@ -173,3 +189,10 @@
 2. 五张 README 截图用 v0.3.0 界面重拍（browser-use 后台直存 docs/screenshots/）：hero 空态 / workstation（做题链高亮 + 查壳结论 + `_lvr` 工程目录行）/ 调用图（深度 1 层次布局）/ 解码链（XOR 0x17 → XOR "ATRI" → flag）/ PyInstaller 解包（60 条目 + manifest 预览）✅
 3. 过程中抓到并修掉两个 drawer 布局 bug（踩坑 #12：收起后死白 + hero 永不回）✅
 4. 全量 pytest 125 passed；`node --check` 过 ✅
+
+**UX 批量修复终检（2026-11-11，v0.3.0 发布后）**：
+
+1. UI 路径 E2E（Playwright headless Edge 1920×1080，脚本 `C:\Users\50812\AppData\Local\Temp\e2e_ux.py`）**23 项断言全绿**：路径打开 → st-program/字符串列表就位；xref 卡片 inspector 首位 + 双击高亮 + 行零溢出；切换 pyre 时面板即刻清空、`/api/status` 引擎忙时 <3s 响应；解包 outdir 落样本旁 `_lvr/unpacked/`；manifest 预览可读文本 + Ghidra 按钮隐藏、pyc → noexec 提示、VCRUNTIME140.dll → 按钮出现；垃圾文件打开失败 → 引擎保住 pyre、UI 继续可用；统一搜索（字符串/函数名/MZ hex）+ 清空还原；字符串过滤清空还原；解码预设 b64→`flag{test}`、hex→`flag{x}`；操作中文标签 ✅
+2. E2E 顺带抓出并修掉 **loadProgram 自我清空回归**（踩坑 #13）✅
+3. 非引擎 pytest 118 passed；`node --check` 过 ✅
+4. 干净态验证：中央 projects/samples/recent.json + 三个样本树 `_lvr` + 7 个 %TEMP% 解包残留全部清空后重跑全链路 ✅
