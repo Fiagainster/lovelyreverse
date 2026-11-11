@@ -89,8 +89,14 @@
             <option value="3">depth 3</option>
           </select>
           <button class="btn btn-ghost btn-xs" id="graph-refresh">⟲ rebuild</button>
+          <button class="btn btn-ghost btn-xs" id="graph-fit">⤢ fit</button>
           <span class="code-title" id="graph-info">select a function, then rebuild</span>
           <span class="dim" id="graph-stats"></span>
+          <span class="graph-legend">
+            <i class="lg lg-caller"></i>caller
+            <i class="lg lg-center"></i>center
+            <i class="lg lg-callee"></i>callee
+          </span>
         </div>
         <canvas id="graph-canvas"></canvas>
       </div>

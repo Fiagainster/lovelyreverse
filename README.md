@@ -14,7 +14,7 @@
 <p align="center">
   <img src="docs/screenshots/callgraph.png" width="96%" alt="lovelyreverse call graph">
   <br/>
-  <em>Call graph — force-directed neighborhood around the current function</em>
+  <em>Call graph — Ghidra-style hierarchical layout: callers above, callees below, double-click to expand</em>
 </p>
 
 ## 这是什么
@@ -37,7 +37,7 @@
 | **functions** | 全量函数列表，实时过滤，滚动加载；点击即反编译 |
 | **✎ decompile** | C 伪代码 + 自研语法高亮；**代码里的函数名/地址可点击跳转**；一键复制 / 下载 `.c` |
 | **⌗ disassembly** | 汇编清单（地址/字节/助记符），call 目标可点击跟进 |
-| **◈ call graph** | **函数调用图**（力导向布局）：以当前函数为中心 BFS 展开，滚轮缩放、拖拽平移、点选跳转 |
+| **◈ call graph** | **函数调用图**（Ghidra 式层次布局）：caller 在上 / callee 在下，层次分层 + 重心排序减少交叉；实线箭头表示调用方向、虚线表示回边；**双击节点增量展开**，滚轮缩放、拖拽平移 |
 | **⊞ memory hex** | 按内存块原始读取，翻页/跳偏移 |
 | **strings** | Ghidra 识别的字符串，一键送入解码实验室 |
 | **imports / exports** | 导入函数（含所属库）与导出入口 |
@@ -71,11 +71,25 @@
 
 ### 安装
 
+**方式一：从 GitHub Release 安装（推荐）**
+
+到 [Releases](https://github.com/Fiagainster/lovelyreverse/releases) 下载最新的 `.whl`，然后：
+
+```bash
+pip install lovelyreverse-0.1.0-py3-none-any.whl
+lvr serve
+```
+
+**方式二：从源码安装**
+
 ```bash
 git clone https://github.com/Fiagainster/lovelyreverse.git
 cd lovelyreverse
 pip install -e .
 ```
+
+> 依赖极简：除 `pyghidra` 外**零第三方依赖**——HTTP 服务是 stdlib 手写的，前端是原生 JS，离线可用。
+> PyPI 发布准备中（`pip install lovelyreverse`）。
 
 ### 启动
 
@@ -127,7 +141,7 @@ flag 到手
 ```bash
 pip install -e .[dev]
 
-# 单元 + 服务层（97 个测试中 92 个，无需 Ghidra）
+# 单元 + 服务层（无需 Ghidra）
 python -m pytest -m "not engine"
 
 # 引擎集成测试（需要 GHIDRA_INSTALL_DIR + gcc，编译 crypto_demo 夹具 → 真实分析 → 断言）
@@ -135,6 +149,14 @@ GHIDRA_INSTALL_DIR="D:\SecurityTools\ghidra_12.2_PUBLIC" python -m pytest -m eng
 ```
 
 CI（GitHub Actions，ubuntu + windows × Python 3.11/3.13）跑 `-m "not engine"`；引擎测试留给有 Ghidra 的本地环境。
+
+## 发行
+
+```bash
+pip install build
+python -m build          # → dist/*.whl + dist/*.tar.gz
+gh release create v0.1.0 dist/* --title "v0.1.0" --notes "..."
+```
 
 ## 路线图
 

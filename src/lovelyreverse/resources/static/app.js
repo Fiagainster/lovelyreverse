@@ -713,240 +713,471 @@ async function decompileAll() {
   } finally { setBusy(false); }
 }
 
-/* ═══════════════════════ call graph (canvas force layout) ═══════════════════════ */
+/* ═══════════════════════ call graph (Ghidra-style Sugiyama layout) ═══════════════════════
+   Layout model borrowed from Ghidra's GraphServices (jungrapht):
+   hierarchical ranks (callers above, callees below), barycenter ordering to
+   minimize edge crossings, orthogonal-ish edges with arrowheads, and
+   incremental expansion by double-clicking a node. */
+
+const GRAPH_LAYER_H = 118;
+const GRAPH_GAP = 26;
+const GRAPH_MAX_NODES = 400;
 
 const G = {
-  nodes: [],          // {addr, name, x, y, vx, vy, fixed}
-  posById: new Map(),
-  edges: [],          // {a, b}
-  center: null,
+  rawNodes: new Map(),   // addr -> name
+  rawEdges: new Set(),   // "callerAddr>calleeAddr"
+  center: 0,
+  nodes: [],             // laid out: {addr,name,rank,kind,x,y,w,h}
+  byId: new Map(),
+  edges: [],             // {from,to,fromNode,toNode}
   scale: 1, tx: 0, ty: 0,
-  alpha: 0, draggingNode: null, panning: false,
   hover: null, selected: null,
-  raf: 0, canvas: null, ctx: null,
+  panning: false, dragging: null, down: null, moved: false,
+  canvas: null, ctx: null, raf: 0,
 };
 
+function resetGraph(centerAddr) {
+  G.rawNodes = new Map();
+  G.rawEdges = new Set();
+  G.center = centerAddr;
+  G.selected = centerAddr;
+  G.hover = null;
+  G.scale = 1;
+  G.tx = 0;
+  G.ty = 0;
+}
+
+function mergeGraphPiece(g) {
+  for (const n of g.nodes) if (!G.rawNodes.has(n.addr)) G.rawNodes.set(n.addr, n.name);
+  for (const [a, b] of g.edges) G.rawEdges.add(`${a}>${b}`);
+}
+
 async function showGraph(addr) {
-  const depth = Number($("#graph-depth").value || 2);
-  $("#graph-info").textContent = `building neighborhood of ${hexpad(addr)}…`;
+  resetGraph(addr);
+  $("#graph-info").innerHTML = `building <b>${hexpad(addr)}</b>…`;
   try {
-    const g = await api(`function/${addr}/callgraph?depth=${depth}&max=220`);
-    G.center = g.center;
-    $("#graph-info").innerHTML = `center <b>${hexpad(g.center)}</b>`;
-    $("#graph-stats").textContent = `${g.nodes.length} nodes · ${g.edges.length} edges`;
-    // keep existing positions for stable re-layout
-    const old = new Map(G.nodes.map((n) => [n.addr, n]));
-    const W = G.canvas?.clientWidth || 800, H = G.canvas?.clientHeight || 500;
-    G.nodes = g.nodes.map((n, i) => {
-      const o = old.get(n.addr);
-      return {
-        addr: n.addr, name: n.name,
-        x: o?.x ?? W / 2 + Math.cos(i / g.nodes.length * Math.PI * 2) * 160,
-        y: o?.y ?? H / 2 + Math.sin(i / g.nodes.length * Math.PI * 2) * 160,
-        vx: 0, vy: 0, fixed: false,
-      };
-    });
-    G.posById = new Map(G.nodes.map((n) => [n.addr, n]));
-    G.edges = g.edges
-      .filter(([a, b]) => G.posById.has(a) && G.posById.has(b))
-      .map(([a, b]) => ({ a, b }));
-    G.selected = addr;
-    layoutGraph(W, H);
-    startGraphLoop();
+    const depth = Number($("#graph-depth").value || 2);
+    mergeGraphPiece(await api(`function/${addr}/callgraph?depth=${depth}&max=${GRAPH_MAX_NODES}`));
+    layoutGraph();
+    fitGraph();
+    updateGraphStats();
+    pokeGraph();
   } catch (e) {
-    $("#graph-info").textContent = e.message;
+    $("#graph-info").textContent = "graph failed: " + e.message;
   }
 }
 
-function layoutGraph(W, H, ticks = 260) {
-  const n = G.nodes.length;
-  if (!n) return;
-  const REP = Math.min(24000, 900000 / Math.max(n, 40));
-  for (let t = 0; t < ticks; t++) {
-    stepGraph(W, H, REP, 1);
-    G.alpha *= 0.985;
+async function expandGraphNode(node) {
+  if (G.rawNodes.size >= GRAPH_MAX_NODES) {
+    toast(`graph limit reached (${GRAPH_MAX_NODES} nodes)`, "info");
+    return;
+  }
+  try {
+    const g = await api(`function/${node.addr}/callgraph?depth=1&max=120`);
+    const beforeN = G.rawNodes.size, beforeE = G.rawEdges.size;
+    mergeGraphPiece(g);
+    if (G.rawNodes.size === beforeN && G.rawEdges.size === beforeE) {
+      toast("nothing new to expand here", "info", 1600);
+      return;
+    }
+    layoutGraph();
+    fitGraph();
+    updateGraphStats();
+    pokeGraph();
+    logLine(`graph: expanded ${node.name} (${G.rawNodes.size} nodes)`, "hi");
+  } catch (e) {
+    toast("expand failed: " + e.message, "error");
   }
 }
 
-function stepGraph(W, H, REP, strength) {
-  const nodes = G.nodes;
-  // repulsion (capped O(n²))
-  for (let i = 0; i < nodes.length; i++) {
-    const a = nodes[i];
-    for (let j = i + 1; j < nodes.length; j++) {
-      const b = nodes[j];
-      let dx = a.x - b.x, dy = a.y - b.y;
-      let d2 = dx * dx + dy * dy;
-      if (d2 < 1) d2 = 1, dx = 1;
-      if (d2 > 360000) continue;            // cut long-range forces
-      const f = (REP / d2) * strength;
-      const d = Math.sqrt(d2);
-      const fx = (dx / d) * f, fy = (dy / d) * f;
-      a.vx += fx; a.vy += fy;
-      b.vx -= fx; b.vy -= fy;
+function updateGraphStats() {
+  $("#graph-info").innerHTML = `center <b>${hexpad(G.center)}</b>`;
+  $("#graph-stats").textContent =
+    `${G.rawNodes.size} nodes · ${G.rawEdges.size} edges · double-click a node to expand`;
+}
+
+/* ---------------- rank computation: callers negative, callees positive ---------------- */
+
+function computeRanks() {
+  const ranks = new Map([[G.center, 0]]);
+  const adj = new Map();
+  const touch = (a) => { if (!adj.has(a)) adj.set(a, []); };
+  for (const key of G.rawEdges) {
+    const [a, b] = key.split(">").map(Number);
+    touch(a); touch(b);
+    adj.get(a).push({ next: b, delta: 1 });   // a calls b
+    adj.get(b).push({ next: a, delta: -1 });  // a is a caller of b
+  }
+  const queue = [G.center];
+  while (queue.length) {
+    const cur = queue.shift();
+    const r = ranks.get(cur);
+    for (const { next, delta } of adj.get(cur) || []) {
+      if (!ranks.has(next)) {
+        ranks.set(next, Math.max(-3, Math.min(3, r + delta)));
+        queue.push(next);
+      }
     }
   }
-  // springs
-  for (const e of G.edges) {
-    const a = G.posById.get(e.a), b = G.posById.get(e.b);
-    if (!a || !b) continue;
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const d = Math.max(1, Math.hypot(dx, dy));
-    const f = (d - 110) * 0.02 * strength;
-    const fx = (dx / d) * f, fy = (dy / d) * f;
-    a.vx += fx; a.vy += fy;
-    b.vx -= fx; b.vy -= fy;
+  for (const addr of G.rawNodes.keys()) if (!ranks.has(addr)) ranks.set(addr, 0);
+  return ranks;
+}
+
+/* ---------------- layout: layers + barycenter ordering ---------------- */
+
+function layoutGraph() {
+  const ctx = G.ctx;
+  const FONT = "12px 'JetBrains Mono', Consolas, monospace";
+  ctx.font = FONT;
+  const ranks = computeRanks();
+
+  const nodes = [];
+  const byId = new Map();
+  for (const [addr, name] of G.rawNodes) {
+    const tw = ctx.measureText(name).width;
+    const n = {
+      addr, name,
+      rank: ranks.get(addr),
+      w: Math.max(110, Math.min(300, tw + 34)),
+      h: 42, x: 0, y: 0, kind: "same",
+    };
+    nodes.push(n);
+    byId.set(addr, n);
   }
-  // gravity + integrate
-  for (const nd of nodes) {
-    const gx = (W / 2 - nd.x) * 0.012, gy = (H / 2 - nd.y) * 0.012;
-    nd.vx += gx; nd.vy += gy;
-    if (nd.addr === G.center) { nd.vx += gx; nd.vy += gy; }  // center pulled twice
-    if (nd.fixed) { nd.vx = nd.vy = 0; continue; }
-    nd.x += nd.vx * 0.5; nd.y += nd.vy * 0.5;
-    nd.vx *= 0.82; nd.vy *= 0.82;
+  for (const n of nodes) {
+    n.kind = n.addr === G.center ? "center"
+      : n.rank < 0 ? "caller"
+      : n.rank > 0 ? "callee" : "same";
+  }
+
+  const edges = [];
+  for (const key of G.rawEdges) {
+    const [a, b] = key.split(">").map(Number);
+    const fa = byId.get(a), fb = byId.get(b);
+    if (fa && fb) edges.push({ from: a, to: b, fromNode: fa, toNode: fb });
+  }
+
+  const layers = new Map();
+  for (const n of nodes) {
+    if (!layers.has(n.rank)) layers.set(n.rank, []);
+    layers.get(n.rank).push(n);
+  }
+  const sortedRanks = [...layers.keys()].sort((a, b) => a - b);
+
+  // seed order: center first in its layer, then by address for stability
+  for (const r of sortedRanks) {
+    layers.get(r).sort((a, b) =>
+      (a.addr === G.center ? -1 : b.addr === G.center ? 1 : a.addr - b.addr));
+  }
+
+  // barycenter sweeps to reduce crossings
+  const neighbors = new Map();
+  for (const e of edges) {
+    if (!neighbors.has(e.from)) neighbors.set(e.from, []);
+    if (!neighbors.has(e.to)) neighbors.set(e.to, []);
+    neighbors.get(e.from).push(e.to);
+    neighbors.get(e.to).push(e.from);
+  }
+  for (let pass = 0; pass < 4; pass++) {
+    const pos = new Map();
+    for (const r of sortedRanks) layers.get(r).forEach((n, i) => pos.set(n.addr, i));
+    for (const r of sortedRanks) {
+      const layer = layers.get(r);
+      const bary = new Map();
+      for (const n of layer) {
+        const others = (neighbors.get(n.addr) || []).filter((a) => {
+          const m = byId.get(a);
+          return m && m.rank !== r;
+        });
+        bary.set(n.addr, others.length
+          ? others.reduce((s, a) => s + (pos.get(a) ?? 0), 0) / others.length
+          : pos.get(n.addr));
+      }
+      layer.sort((a, b) => (bary.get(a.addr) - bary.get(b.addr)) || (a.addr - b.addr));
+    }
+  }
+
+  // pack each layer horizontally, y by rank
+  for (const r of sortedRanks) {
+    const layer = layers.get(r);
+    const total = layer.reduce((s, n) => s + n.w, 0) + GRAPH_GAP * (layer.length - 1);
+    let x = -total / 2;
+    for (const n of layer) {
+      n.x = x + n.w / 2;
+      n.y = r * GRAPH_LAYER_H;
+      x += n.w + GRAPH_GAP;
+    }
+  }
+  const cNode = byId.get(G.center);
+  if (cNode) {
+    const dx = -cNode.x;
+    for (const n of nodes) n.x += dx;
+  }
+
+  G.nodes = nodes;
+  G.byId = byId;
+  G.edges = edges;
+}
+
+function fitGraph() {
+  if (!G.nodes.length) return;
+  const c = G.canvas;
+  const host = c.parentElement;
+  let W = host ? host.clientWidth : 0;
+  let H = host ? host.clientHeight : 0;
+  if (!W || !H || W > 8000 || H > 8000) { W = 800; H = 500; }
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const n of G.nodes) {
+    minX = Math.min(minX, n.x - n.w / 2); maxX = Math.max(maxX, n.x + n.w / 2);
+    minY = Math.min(minY, n.y - n.h / 2); maxY = Math.max(maxY, n.y + n.h / 2);
+  }
+  const pad = 46;
+  const gw = Math.max(1, maxX - minX + pad * 2);
+  const gh = Math.max(1, maxY - minY + pad * 2);
+  const fit = Math.min(W / gw, H / gh);
+  // Keep labels readable: never zoom below 0.6; when the graph is wider than
+  // the viewport, anchor the center node instead of the bounding box.
+  G.scale = Math.max(0.6, Math.min(1.5, fit));
+  const anchor = (fit < 0.6 && G.byId?.get(G.center)) || null;
+  if (anchor) {
+    G.tx = W / 2 - anchor.x * G.scale;
+    G.ty = H / 2 - anchor.y * G.scale;
+  } else {
+    G.tx = W / 2 - ((minX + maxX) / 2) * G.scale;
+    G.ty = H / 2 - ((minY + maxY) / 2) * G.scale;
   }
 }
 
-function startGraphLoop() {
-  if (G.raf) cancelAnimationFrame(G.raf);
-  const loop = () => {
-    const settled = G.alpha <= 0.003 && !G.draggingNode && !G.panning && !G.hover;
-    drawGraph();
-    if (settled) { G.raf = 0; return; }   // stop burning frames once at rest
-    G.raf = requestAnimationFrame(loop);
-  };
-  G.raf = requestAnimationFrame(loop);
+/* ---------------- drawing ---------------- */
+
+function rrPath(ctx, x, y, w, h, r) {
+  if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); return; }
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function arrowHead(ctx, x, y, angle) {
+  const s = 7;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x - s * Math.cos(angle - 0.42), y - s * Math.sin(angle - 0.42));
+  ctx.lineTo(x - s * Math.cos(angle + 0.42), y - s * Math.sin(angle + 0.42));
+  ctx.closePath();
+  ctx.fill();
+}
+
+function clipText(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let lo = 0, hi = text.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (ctx.measureText(text.slice(0, mid) + "…").width <= maxW) lo = mid;
+    else hi = mid - 1;
+  }
+  return text.slice(0, lo) + "…";
 }
 
 function pokeGraph() {
-  // wake the render loop after any interaction/state change
-  G.alpha = Math.max(G.alpha, 0.15);
-  if (!G.raf) startGraphLoop();
+  if (G.raf) return;
+  G.raf = requestAnimationFrame(() => { G.raf = 0; drawGraph(); });
 }
 
 function drawGraph() {
   const c = G.canvas, ctx = G.ctx;
-  if (!c) return;
-  const W = c.clientWidth, H = c.clientHeight;
-  if (c.width !== W * devicePixelRatio || c.height !== H * devicePixelRatio) {
-    c.width = W * devicePixelRatio; c.height = H * devicePixelRatio;
+  if (!c || !ctx) return;
+  // Guard against a layout feedback loop: never let the canvas attribute
+  // size drive its own CSS size. Measure the parent instead.
+  const host = c.parentElement;
+  let W = host ? host.clientWidth : 0;
+  let H = host ? host.clientHeight : 0;
+  if (!W || !H) { W = c.clientWidth; H = c.clientHeight; }
+  if (!W || !H) return;
+  if (W > 8000 || H > 8000) return;   // runaway layout: refuse to draw
+  const dpr = window.devicePixelRatio || 1;
+  const wantW = Math.round(W * dpr), wantH = Math.round(H * dpr);
+  if (c.width !== wantW || c.height !== wantH) {
+    c.width = wantW;
+    c.height = wantH;
   }
-  // settle: run a few sim steps while energy is high
-  if (G.alpha > 0.002) {
-    const REP = Math.min(24000, 900000 / Math.max(G.nodes.length, 40));
-    for (let t = 0; t < 2; t++) stepGraph(W, H, REP, G.alpha);
-    G.alpha *= 0.995;
-  }
-  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
   ctx.save();
   ctx.translate(G.tx, G.ty);
   ctx.scale(G.scale, G.scale);
 
-  // edges
-  ctx.lineWidth = 1;
+  const hot = G.hover;
+  // ---- edges (call direction: caller -> callee) ----
   for (const e of G.edges) {
-    const a = G.posById.get(e.a), b = G.posById.get(e.b);
+    const a = e.fromNode, b = e.toNode;
     if (!a || !b) continue;
-    const hot = G.hover && (e.a === G.hover || e.b === G.hover);
-    ctx.strokeStyle = hot ? "rgba(125,217,154,.9)" : "rgba(255,93,143,.28)";
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
+    const lit = hot != null && (e.from === hot || e.to === hot);
+    ctx.strokeStyle = lit ? "rgba(255,93,143,.9)" : "rgba(128,118,146,.45)";
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.lineWidth = lit ? 1.6 : 1.1;
+
+    if (b.y > a.y) {
+      // normal downward call edge
+      const x1 = a.x, y1 = a.y + a.h / 2;
+      const x2 = b.x, y2 = b.y - b.h / 2;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      arrowHead(ctx, x2, y2, Math.atan2(y2 - y1, x2 - x1));
+    } else if (b.y < a.y) {
+      // cycle / backward edge: dashed
+      const x1 = a.x, y1 = a.y - a.h / 2;
+      const x2 = b.x, y2 = b.y + b.h / 2;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.setLineDash([]);
+      arrowHead(ctx, x2, y2, Math.atan2(y2 - y1, x2 - x1));
+    } else {
+      // same rank: arc above
+      const dir = a.x <= b.x ? 1 : -1;
+      const x1 = a.x + dir * a.w / 2, y1 = a.y - a.h / 4;
+      const x2 = b.x - dir * b.w / 2, y2 = b.y - b.h / 4;
+      const mx = (x1 + x2) / 2, my = Math.min(y1, y2) - 40;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.quadraticCurveTo(mx, my, x2, y2); ctx.stroke();
+      arrowHead(ctx, x2, y2, Math.atan2(y2 - my, x2 - mx));
+    }
   }
-  // nodes
-  ctx.font = "11px 'JetBrains Mono', Consolas, monospace";
-  ctx.textAlign = "center";
+
+  // ---- nodes ----
   for (const n of G.nodes) {
-    const w = Math.min(180, ctx.measureText(n.name).width + 16);
-    const h = 22;
     const isCenter = n.addr === G.center;
     const isSel = n.addr === G.selected;
     const isHover = n.addr === G.hover;
-    ctx.beginPath();
-    ctx.roundRect(n.x - w / 2, n.y - h / 2, w, h, 5);
-    if (isCenter) { ctx.fillStyle = "#ff5d8f"; ctx.fill(); ctx.fillStyle = "#17060d"; }
-    else { ctx.fillStyle = isHover ? "#252031" : "#1c1823"; ctx.fill(); ctx.strokeStyle = isSel ? "#6fd3e8" : "#3a3247"; ctx.lineWidth = isSel ? 1.6 : 1; ctx.stroke(); ctx.fillStyle = "#e9e3f0"; }
-    ctx.fillText(n.name, n.x, n.y + 3.5);
+    const x = n.x - n.w / 2, y = n.y - n.h / 2;
+
+    rrPath(ctx, x, y, n.w, n.h, 6);
+    ctx.fillStyle = isCenter ? "rgba(255,93,143,.15)"
+      : isHover ? "#262030" : "#1a1621";
+    ctx.fill();
+    ctx.strokeStyle = isCenter ? "#ff5d8f"
+      : isSel ? "#6fd3e8" : "#382f45";
+    ctx.lineWidth = isCenter || isSel ? 1.8 : 1;
+    ctx.stroke();
+
+    // left kind stripe
+    const stripe = n.kind === "caller" ? "#6fd3e8"
+      : n.kind === "callee" ? "#7dd99a"
+      : n.kind === "center" ? "#ff5d8f" : "#ffc26b";
+    ctx.fillStyle = stripe;
+    rrPath(ctx, x + 1.5, y + 1.5, 3.5, n.h - 3, 1.75);
+    ctx.fill();
+
+    ctx.textAlign = "left";
+    ctx.font = "10px 'JetBrains Mono', Consolas, monospace";
+    ctx.fillStyle = "#8b8199";
+    ctx.fillText(hexpad(n.addr), x + 13, y + 15);
+
+    ctx.font = "12px 'JetBrains Mono', Consolas, monospace";
+    ctx.fillStyle = isCenter ? "#ffd7e4" : "#e9e3f0";
+    ctx.fillText(clipText(ctx, n.name, n.w - 22), x + 13, y + 32);
   }
+
   ctx.restore();
 }
 
 function graphHit(mx, my) {
-  const x = (mx - G.tx) / G.scale, y = (my - G.ty) / G.scale;
-  const ctx = G.ctx;
-  for (const n of G.nodes) {
-    const w = Math.min(180, ctx.measureText(n.name).width + 16);
-    if (Math.abs(x - n.x) <= w / 2 && Math.abs(y - n.y) <= 11) return n;
+  const x = (mx - G.tx) / G.scale;
+  const y = (my - G.ty) / G.scale;
+  for (let i = G.nodes.length - 1; i >= 0; i--) {
+    const n = G.nodes[i];
+    if (Math.abs(x - n.x) <= n.w / 2 + 2 && Math.abs(y - n.y) <= n.h / 2 + 2) return n;
   }
   return null;
 }
+
+/* ---------------- interactions ---------------- */
 
 function wireGraph() {
   const c = $("#graph-canvas");
   G.canvas = c;
   G.ctx = c.getContext("2d");
-  let downX = 0, downY = 0, moved = false, hitAtDown = null;
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => pokeGraph()).observe(c.parentElement);
+  }
 
   c.addEventListener("mousedown", (e) => {
     const r = c.getBoundingClientRect();
     const hit = graphHit(e.clientX - r.left, e.clientY - r.top);
-    hitAtDown = hit;
-    downX = e.clientX; downY = e.clientY; moved = false;
-    if (hit) { G.draggingNode = hit; hit.fixed = true; pokeGraph(); }
-    else { G.panning = true; c.classList.add("grabbing"); }
+    G.down = hit;
+    G.moved = false;
+    if (hit) {
+      G.dragging = hit;
+    } else {
+      G.panning = true;
+      c.classList.add("grabbing");
+    }
+    e.preventDefault();
   });
+
   window.addEventListener("mousemove", (e) => {
     const r = c.getBoundingClientRect();
     const mx = e.clientX - r.left, my = e.clientY - r.top;
-    if (G.draggingNode) {
-      G.draggingNode.x = (mx - G.tx) / G.scale;
-      G.draggingNode.y = (my - G.ty) / G.scale;
+    if (G.dragging) {
+      G.moved = true;
+      G.dragging.x = (mx - G.tx) / G.scale;
+      G.dragging.y = (my - G.ty) / G.scale;
       pokeGraph();
       return;
     }
     if (G.panning) {
-      if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 3) moved = true;
-      G.tx += e.movementX; G.ty += e.movementY;
+      if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) G.moved = true;
+      G.tx += e.movementX;
+      G.ty += e.movementY;
+      pokeGraph();
       return;
     }
     const hit = graphHit(mx, my);
-    G.hover = hit?.addr ?? null;
-    c.classList.toggle("nodehover", !!hit);
-  });
-  window.addEventListener("mouseup", (e) => {
-    const wasNode = G.draggingNode;
-    if (wasNode) { wasNode.fixed = false; G.draggingNode = null; }
-    if (G.panning && !moved && hitAtDown) {
-      // simple click on a node → select it (and update inspector)
-      selectFunction(hitAtDown.addr, hitAtDown.name, { keepTab: true });
-      G.selected = hitAtDown.addr;
+    const next = hit ? hit.addr : null;
+    if (next !== G.hover) {
+      G.hover = next;
+      c.classList.toggle("nodehover", !!hit);
+      pokeGraph();
     }
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (G.dragging && !G.moved) {
+      // plain click: select, keep whichever tab is open
+      const n = G.dragging;
+      G.selected = n.addr;
+      S.currentFunc = { addr: n.addr, name: n.name };
+      loadXrefs(n.addr);
+      pokeGraph();
+    }
+    G.dragging = null;
     G.panning = false;
     c.classList.remove("grabbing");
   });
+
   c.addEventListener("dblclick", (e) => {
     const r = c.getBoundingClientRect();
     const hit = graphHit(e.clientX - r.left, e.clientY - r.top);
-    if (hit) selectFunction(hit.addr, hit.name);   // → decompile tab
+    if (hit) expandGraphNode(hit);
   });
+
   c.addEventListener("wheel", (e) => {
     e.preventDefault();
     const r = c.getBoundingClientRect();
     const mx = e.clientX - r.left, my = e.clientY - r.top;
     const k = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    const ns = Math.max(0.15, Math.min(4, G.scale * k));
+    const ns = Math.max(0.15, Math.min(3.5, G.scale * k));
     G.tx = mx - ((mx - G.tx) / G.scale) * ns;
     G.ty = my - ((my - G.ty) / G.scale) * ns;
     G.scale = ns;
+    pokeGraph();
   }, { passive: false });
-  // re-center view
+
   $("#graph-refresh").onclick = () => {
     if (S.currentFunc) showGraph(S.currentFunc.addr);
   };
-  c.addEventListener("mousemove", () => { if (!G.raf && (G.alpha > 0.003 || G.draggingNode || G.panning)) pokeGraph(); });
+  $("#graph-fit").onclick = () => { fitGraph(); pokeGraph(); };
   $("#graph-depth").onchange = () => {
     if (S.currentFunc) showGraph(S.currentFunc.addr);
   };
@@ -996,7 +1227,12 @@ window.addEventListener("DOMContentLoaded", async () => {
   wireTabs("#center-tabs", "#center-body", (tab) => {
     if (tab === "hex" && S.hexBlock && !$("#code-hex .hexgrid")) readHex();
     if (tab === "disasm" && S.currentFunc) showDisasm(S.currentFunc.addr);
-    if (tab === "graph" && S.currentFunc && !G.nodes.length) showGraph(S.currentFunc.addr);
+    if (tab === "graph" && S.currentFunc && G.center !== S.currentFunc.addr) {
+      showGraph(S.currentFunc.addr);
+    } else if (tab === "graph") {
+      fitGraph();
+      pokeGraph();
+    }
   });
   wireTabs("#drawer-tabs", "#drawer-body");
   wireResizer('[data-resize="left"]', "--left-w", 180, 520);
