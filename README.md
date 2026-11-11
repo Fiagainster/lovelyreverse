@@ -71,10 +71,22 @@
 
 ### 实战验证
 
-用本工具实测（2026-11-10 / 11-11）：
+用本工具实测题库（2026-11-11，10 个样本全链路：打开 → 分析 → 反编译 → 调用图 → 常量 / 熵）：
+
+| 样本 | 特点 | 结果 |
+|---|---|---|
+| `c_sm4.exe` | 国密 SM4 | **SM4 S-box 命中**，一眼定位加密函数 |
+| `crackme_easy.exe` | 经典 crackme | 86 函数，反编译 / 调用图 ✓ |
+| `Her.exe` | MSVC 常规题 | 262 函数 ✓ |
+| `flower.exe` | 花指令混淆 | 685 函数，Base64 / Uuencode 表命中 |
+| `Ferris's Secret Scuttle.exe` | **加壳** Rust 题 | 熵 **7.93 → likely packed**，仅 4 函数（壳代码本就不可分析） |
+| `Ferris_unpacked_OEP.exe` | 同题解壳 dump | 熵 6.25、**2727 函数**——加壳前后一眼可辨 |
+| `NotNormalExe.exe` | 7.8 MB 怪样本 | 817 函数 ✓，CRC 表 ×4 命中 |
+| `MazE` / `wtf` | **ELF x86-64** | ELF 全链路 ✓，wtf 命中 TEA δ + Base64 |
+| `opcode.bin` | 0 字节坏文件 | 优雅报错不崩，且不毒化引擎（回归测试固化） |
 
 - 学习笔记中的 `ez_debug` 密文，解码链 `[xor ATRI] → [xor 17]` 直接解出 `flag{y0u_ar3_g0od_@_Debu9}`
-- gcc 编译的含 AES S-box / SHA-256 K / TEA δ / Base64 表的测试程序，常量扫描 **5/5 命中、零误报**，TEA δ 正确归属到 `tea_encrypt` 函数
+- gcc 编译的 crypto_demo 常量扫描 **5/5 命中、零误报**，TEA δ 正确归属 `tea_encrypt`（引擎测试固化）
 - 题库 `pyre.exe`（PyInstaller 打包题）：overlay 自动识别，解包 **60 个条目 · PYZ 133 模块**，入口脚本 `1.pyc` pyc magic 修复后可直接预览 / 送 Ghidra
 
 <p align="center">
@@ -207,6 +219,7 @@ gh release create v0.1.0 dist/* --title "v0.1.0" --notes "..."
 - [ ] gdb / x64dbg 桥接（动态调试面板）
 - [x] PyInstaller 一键解包（pyinstxtractor 内置化）
 - [ ] pycdc 集成（.pyc 反编译回源码）
+- [ ] 常量扫描：短签名（<8B）命中标弱，减少巧合误报
 - [ ] 签名库社区化：YARA 规则导入、用户自定义签名
 - [ ] Ghidra 数据库复用（免重分析）
 - [x] 国际化（中文 / English 界面切换）

@@ -114,3 +114,21 @@ def test_memory_read_and_search(engine):
     hits = em.search_hex(needle, limit=50)
     assert hits, "TEA delta should be findable in memory"
     assert any(h["function"] == "tea_encrypt" for h in hits)
+
+
+def test_bad_file_does_not_poison_engine(engine, tmp_path):
+    """A failed import must release the Ghidra project lock.
+
+    Regression: a failed open used to leak the just-created GhidraProject
+    (created before self.project was assigned), so its on-disk lock made
+    every later open die with LockException until restart.
+    """
+    em, _ = engine
+    good = em.source_path
+    bad = tmp_path / "zero.bin"
+    bad.write_bytes(b"")
+    with pytest.raises(Exception):  # noqa: B017 - Java LoadException via JPype
+        em.open(bad)
+    # the engine must still open good binaries afterwards
+    info = em.open(good)
+    assert info["function_count"] > 5

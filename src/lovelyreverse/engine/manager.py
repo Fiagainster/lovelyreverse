@@ -171,30 +171,41 @@ class EngineManager:
             else:
                 project = GhidraProject.createProject(pdir, "main", False)
 
-            program = None
             try:
-                existing = project.getRootFolder().getFile(name)
-                if existing is not None:
-                    program = project.openProgram("/", name, False)
-            except Exception:  # noqa: BLE001
                 program = None
+                try:
+                    existing = project.getRootFolder().getFile(name)
+                    if existing is not None:
+                        program = project.openProgram("/", name, False)
+                except Exception:  # noqa: BLE001
+                    program = None
 
-            if program is None:
-                program = project.importProgram(src)
                 if program is None:
-                    raise EngineError(
-                        f"Ghidra failed to import '{src.name}' (unsupported or malformed)"
-                    )
-                project.saveAs(program, "/", name, True)
+                    program = project.importProgram(src)
+                    if program is None:
+                        raise EngineError(
+                            f"Ghidra failed to import '{src.name}' (unsupported or malformed)"
+                        )
+                    project.saveAs(program, "/", name, True)
 
-            if progress:
-                progress("running auto-analysis (this can take a while)")
+                if progress:
+                    progress("running auto-analysis (this can take a while)")
 
-            import pyghidra
+                import pyghidra
 
-            pyghidra.analyze(program)
+                pyghidra.analyze(program)
 
-            project.save(program)
+                project.save(program)
+            except BaseException:
+                # The project handle owns the on-disk project lock. If we leave
+                # it open, EVERY later open dies with LockException (poisoned
+                # engine) — close it before propagating. This is not yet
+                # self.project, so the next open's cleanup can't see it.
+                try:
+                    project.close()
+                except Exception:  # noqa: BLE001 - best-effort cleanup
+                    pass
+                raise
 
             self.project = project
             self.program = program
