@@ -39,12 +39,13 @@
 | **⌗ disassembly** | 汇编清单（地址/字节/助记符），call 目标可点击跟进 |
 | **◈ call graph** | **函数调用图**（Ghidra 式层次布局）：caller 在上 / callee 在下，层次分层 + 重心排序减少交叉；实线箭头表示调用方向、虚线表示回边；**双击节点增量展开**，滚轮缩放、拖拽平移 |
 | **⊞ memory hex** | 按内存块原始读取，翻页/跳偏移；一键送入解码实验室 |
-| **strings** | Ghidra 识别的字符串，一键送入解码实验室 |
-| **imports / exports** | 导入函数（含所属库）与导出入口 |
-| **inspector** | 程序信息（格式/架构/编译器/基址）、节区熵值条（>7.2 提示 likely packed）、**Overlay 附加数据检测**、交叉引用、加密常量命中、**PyInstaller 一键解包** |
+| **strings** | Ghidra 识别的字符串，一键送入解码实验室；**单击查引用（谁在用它），双击直接跳进引用函数的反编译并高亮那一行** |
+| **imports / exports** | 导入函数（含所属库）与导出入口；**点导入即查调用者**（thunk xref → caller → 反编译） |
+| **inspector** | 程序信息（格式/架构/编译器/基址）、**查壳 · 结论面板**（区段签名 / 节区熵 / 附加数据五档判定）、节区熵值条、**Overlay 附加数据检测**（MinGW COFF 符号表自动排除）、交叉引用、加密常量命中、**PyInstaller 一键解包** |
 
 ### CTF 特化（本工具的存在意义）
 
+- **做题链联动**（照着真实解题流程做：查壳 → 字符串锚点 → 交叉引用 → 反编译）：查壳结论面板给出方向（干净 / 疑似加壳 + 下一步提示）；字符串单击看「谁在用它」，双击跳进反编译的**精确引用行**；导入点击直达调用者；右键菜单随处可查引用、送解码、复制。字符串和代码不再是两个孤岛。
 - **加密常量识别**（FindCrypt 精髓）：内置 40+ 签名——AES S-box/Te0、SM4 S-box/FK、SM3 IV、MD5/SHA-1/SHA-256/SHA-512 IV 与 K 表、Blowfish P 数组、Camellia σ、TEA/XTEA δ、ChaCha σ、Base64/32/Uuencode 字母表、CRC 表、ECC 域素数（程序化生成，零抄写错误）。自动展开大小端双变体，命中自动归属到函数。打开一个带 AES 的 crackme，`.rdata` 里的 S-box 直接标出来。
 - **解码实验室**（CyberChef 精髓）：28 种操作**链式**叠加（hex/base64/base32/ascii85/URL/ROT-n/ROT47/XOR/RC4/位反转/C 转义/gzip/zlib/raw inflate/MD5/SHA-1/SHA-256…），输入支持 text/hex/b64 三种模式。
 - **XOR 工具箱**：

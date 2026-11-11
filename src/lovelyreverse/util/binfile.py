@@ -97,7 +97,7 @@ def parse_pe(data: bytes) -> dict[str, Any] | None:
         pe_off = struct.unpack_from("<I", data, 0x3C)[0]
         if pe_off + 24 > len(data) or data[pe_off : pe_off + 4] != b"PE\x00\x00":
             return None
-        machine, nsec, _ts, _sym, _nsym, opt_size, chars = struct.unpack_from(
+        machine, nsec, _ts, sym_ptr, nsym, opt_size, chars = struct.unpack_from(
             "<HHIIIHH", data, pe_off + 4
         )
         opt_off = pe_off + 24
@@ -134,6 +134,16 @@ def parse_pe(data: bytes) -> dict[str, Any] | None:
             })
             end_max = max(end_max, rawptr + rawsize)
         end_max = max(end_max, cert_end)
+        # COFF symbol table + string table trail the sections in MinGW/debug
+        # builds. They are file structure, not appended payload — counting
+        # them as overlay made every debug-built crackme look "packed".
+        sym_end = 0
+        if sym_ptr and nsym and end_max <= sym_ptr < len(data):
+            strtab_off = sym_ptr + 20 * nsym
+            if strtab_off + 4 <= len(data):
+                strtab_size = struct.unpack_from("<I", data, strtab_off)[0]
+                sym_end = min(strtab_off + strtab_size, len(data))
+        end_max = max(end_max, sym_end)
         file_len = len(data)
         overlay = file_len - end_max if file_len > end_max else 0
         return {
@@ -146,6 +156,7 @@ def parse_pe(data: bytes) -> dict[str, Any] | None:
             "overlay_offset": end_max if overlay else None,
             "overlay_size": overlay,
             "signed": cert_end > 0,
+            "coff_symbols": nsym if (sym_ptr and nsym) else 0,
         }
     except struct.error:
         return None
@@ -239,6 +250,8 @@ def triage(data: bytes) -> dict[str, Any]:
     if parsed:
         info.update(parsed)
         info["overlay_present"] = bool(parsed["overlay_size"])
+        sec_ents = [s.get("entropy", 0.0) for s in parsed.get("sections", [])]
+        info["max_entropy"] = round(max(sec_ents), 3) if sec_ents else info["global_entropy"]
     else:
         info["sections"] = []
         info["overlay_size"] = max(0, len(data) - 0)

@@ -338,6 +338,29 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--faint); }
   flex-shrink: 0;
 }
 .chip.c-crypto { color: var(--rose); border-color: var(--rose-dim); }
+
+/* ── X1: decompile line highlight (xref jump target) ── */
+.codeline.hl { background: rgba(var(--amber-rgb), .18); box-shadow: inset 2px 0 0 var(--amber); }
+.codeline.hl .ln { color: var(--amber); }
+
+/* ── X1: inspector group flash (string/import click feedback) ── */
+@keyframes inspFlash { 0% { background: rgba(var(--rose-rgb), .18); } 100% { background: transparent; } }
+.insp-group.flash { animation: inspFlash 1.1s ease-out; border-radius: var(--radius); }
+
+/* ── X3: packer verdict (查壳结论) ── */
+.verdict { border: 1px solid var(--line); border-left-width: 3px; border-radius: var(--radius); padding: 7px 9px; }
+.verdict .verdict-main { font-size: 12px; font-weight: 600; }
+.verdict .verdict-hint { font-size: 11px; color: var(--dim); margin-top: 2px; line-height: 1.35; }
+.verdict.v-ok { border-left-color: var(--green); }
+.verdict.v-ok .verdict-main { color: var(--green); }
+.verdict.v-warn { border-left-color: var(--amber); }
+.verdict.v-warn .verdict-main { color: var(--amber); }
+.verdict.v-bad { border-left-color: var(--red); }
+.verdict.v-bad .verdict-main { color: var(--red); }
+
+/* ── X2: right-click context menu ── */
+#ctx-menu { position: fixed; z-index: 70; min-width: 170px; box-shadow: var(--shadow); }
+.menu-sep { height: 1px; background: var(--line); margin: 3px 0; }
 .chip.c-hash { color: var(--amber); border-color: var(--amber-dim); }
 .chip.c-ecc { color: var(--cyan); border-color: var(--cyan-dim); }
 .chip.c-encoding { color: var(--green); border-color: var(--green-dim); }

@@ -319,6 +319,12 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                 if what == "comment":
                     return self._json({"addr": addr, "comment": state.engine.function_comment(addr)})
 
+            # ----- generic cross-references (works for data addresses too,
+            # e.g. "who references this string")
+            m = re.fullmatch(r"/api/xrefs/(\d+)", path)
+            if m:
+                return self._json(state.engine.xrefs(int(m.group(1))))
+
             # ----- memory
             if path == "/api/memory/blocks":
                 return self._json({"items": state.engine.memory_blocks()})

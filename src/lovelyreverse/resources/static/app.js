@@ -94,6 +94,111 @@ function fmtSize(n) {
   return (n / 1024 / 1024).toFixed(2) + " MB";
 }
 
+/* ── X2: right-click context menu ── */
+
+function openCtxMenu(x, y, items) {
+  const m = $("#ctx-menu");
+  m.innerHTML = items.map((it, i) =>
+    it === "-" ? `<div class="menu-sep"></div>` : `<div class="menu-item" data-i="${i}">${esc(it.label)}</div>`).join("");
+  m.classList.remove("hidden");
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 8)) + "px";
+  m.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 8)) + "px";
+  m.querySelectorAll(".menu-item").forEach((el) =>
+    el.onclick = () => { m.classList.add("hidden"); items[Number(el.dataset.i)].run(); });
+}
+
+function closeCtxMenu() {
+  const m = $("#ctx-menu");
+  if (m) m.classList.add("hidden");
+}
+
+document.addEventListener("contextmenu", (e) => {
+  closeCtxMenu();
+  const sym = e.target.closest("#code-decompile .a, #code-decompile .f");
+  const selText = String(window.getSelection ? getSelection() : "").trim();
+  if (sym && sym.dataset.addr) {
+    e.preventDefault();
+    const addr = parseInt(sym.dataset.addr, 16);
+    const name = sym.dataset.name || sym.textContent;
+    const items = [{ label: t("ctx.jump"), run: () => navigateAddr(addr, name) }];
+    if (S.funcMap.has(name))
+      items.push({ label: t("ctx.graph"), run: () => { switchCenter("graph"); showGraph(addr); } });
+    items.push({ label: t("ctx.copy_name"), run: () => navigator.clipboard.writeText(name) });
+    openCtxMenu(e.clientX, e.clientY, items);
+    return;
+  }
+  if (selText && (e.target.closest("#code-decompile") || e.target.closest("#code-hex"))) {
+    e.preventDefault();
+    openCtxMenu(e.clientX, e.clientY, [
+      { label: t("ctx.decode_text"), run: () => sendToDecoder(selText, "text") },
+      { label: t("ctx.decode_hex"), run: () => sendToDecoder(selText.replace(/[^0-9a-fA-F]/g, ""), "hex") },
+      "-",
+      { label: t("ctx.copy"), run: () => navigator.clipboard.writeText(selText) },
+    ]);
+    return;
+  }
+  const srow = e.target.closest("#list-strings .row");
+  if (srow) {
+    e.preventDefault();
+    const sAddr = Number(srow.dataset.addr);
+    const lit = srow.querySelector(".lit");
+    const sVal = lit ? lit.textContent : "";
+    openCtxMenu(e.clientX, e.clientY, [
+      { label: t("ctx.refs"), run: () => loadXrefs(sAddr, { focus: true }) },
+      { label: t("ctx.decode_text"), run: () => sendToDecoder(sVal, "text") },
+      "-",
+      { label: t("ctx.copy"), run: () => navigator.clipboard.writeText(sVal) },
+    ]);
+  }
+});
+
+/* ── X3: DIE-style packer verdict (查壳结论) ── */
+
+const PACKER_SECTION_SIGS = [
+  [/^upx/i, "UPX"], [/^\.?vmp[0-9]/i, "VMProtect"], [/themida|winlice/i, "Themida"],
+  [/^\.?aspack|^\.?adata/i, "ASPack"], [/petite/i, "Petite"], [/^\.?mpress/i, "MPRESS"],
+  [/^\.fsg|^fsg/i, "FSG"], [/nspack|^\.?nsp[0-9]/i, "NsPack"],
+  [/pecompact|^\.?pec[0-9]/i, "PECompact"], [/enigma/i, "Enigma"],
+  [/^\.?mew/i, "MEW"], [/^\.?upack/i, "UPack"],
+];
+
+function renderVerdict() {
+  const box = $("#verdict-info");
+  const tri = S.triage;
+  if (!tri) { box.innerHTML = `<div class="insp-empty">${esc(t("insp.nothing"))}</div>`; return; }
+  const secs = tri.sections || [];
+  const ent = Number(tri.max_entropy || 0);
+  const hits = [];
+  for (const sec of secs)
+    for (const [re, name] of PACKER_SECTION_SIGS)
+      if (re.test(String(sec.name || ""))) hits.push(`${name} · ${sec.name}`);
+  let cls, main, hint;
+  if (hits.length) {
+    cls = "v-bad";
+    main = t("verdict.packed", { n: [...new Set(hits)].join(", ") });
+    hint = t("verdict.packed.hint");
+  } else if (ent >= 7.5) {
+    // high entropy outranks a bare overlay — a compressed payload IS packing
+    cls = "v-bad";
+    main = t("verdict.high_entropy", { e: ent.toFixed(2) });
+    hint = t("verdict.high_entropy.hint");
+  } else if (tri.overlay_present) {
+    cls = "v-warn";
+    main = t("verdict.overlay");
+    hint = t("verdict.overlay.hint");
+  } else if (ent >= 6.5) {
+    cls = "v-warn";
+    main = t("verdict.mid_entropy", { e: ent.toFixed(2) });
+    hint = t("verdict.mid_entropy.hint");
+  } else {
+    cls = "v-ok";
+    main = t("verdict.clean");
+    hint = t("verdict.clean.hint");
+  }
+  box.innerHTML = `<div class="verdict ${cls}"><div class="verdict-main">${esc(main)}</div><div class="verdict-hint">${esc(hint)}</div></div>`;
+}
+
 /* ═══════════════════════ global state ═══════════════════════ */
 
 const S = {
@@ -221,6 +326,7 @@ async function loadProgram() {
   renderOps();
   $("#hero").classList.add("hidden");
   $("#st-program").textContent = S.program.name;
+  renderVerdict();
   engineState("ready");
   $("#decompile-title").textContent = t("decompile.title.none");
   $("#code-decompile").innerHTML = `<div class="code-empty">${esc(t("code.empty.dec"))}</div>`;
@@ -299,7 +405,13 @@ async function selectFunction(addr, name, opts = {}) {
   code.innerHTML = `<div class="loading">${esc(t("dec.decompiling", { name }))}</div>`;
   try {
     const res = await api(`function/${addr}/decompile`);
-    renderCode(res.code);
+    renderCode(res.code, {
+      addrLines: res.addr_lines,
+      addrLinesHi: res.addr_lines_hi,
+      addrData: res.addr_data,
+      highlightAddr: opts.highlightAddr,
+      highlightTarget: opts.highlightTarget,
+    });
     if (activeTab("#center-tabs") !== "decompile" && !opts.keepTab && activeTab("#center-tabs") !== "graph")
       switchCenter("decompile");
   } catch (e) {
@@ -404,7 +516,7 @@ function highlightC(code) {
   return out;
 }
 
-function renderCode(codeText) {
+function renderCode(codeText, opts = {}) {
   const box = $("#code-decompile");
   const lines = codeText.replace(/\n$/, "").split("\n");
   box.innerHTML = lines.map((line, i) =>
@@ -419,6 +531,35 @@ function renderCode(codeText) {
       if (addr != null) selectFunction(addr, t.dataset.name);
     }
   };
+  // X1: highlight the decompiled line that references the xref target.
+  // Rules (in order): exact data-address match on the target (string/const
+  // literal tokens carry their own data address), containment of the ref
+  // instruction in a line's code range, nearest following code line
+  // (argument-setup instructions precede the call they feed → gaps belong
+  // to the NEXT line), fallback to the last line starting at/below the ref.
+  if (opts.highlightAddr != null && opts.addrLines) {
+    const H = opts.highlightAddr;
+    const T = opts.highlightTarget != null ? Number(opts.highlightTarget) : null;
+    const lnos = Object.keys(opts.addrLines).map(Number).sort((a, b) => a - b);
+    let lineNo = null;
+    if (T != null && opts.addrData) {
+      for (const ln of lnos) if (Number(opts.addrData[ln]) === T) { lineNo = ln; break; }
+    }
+    if (lineNo == null) {
+      for (const ln of lnos) {
+        const lo = Number(opts.addrLines[ln]);
+        const hi = opts.addrLinesHi && opts.addrLinesHi[ln] != null ? Number(opts.addrLinesHi[ln]) : lo;
+        if (lo <= H && H <= hi) { lineNo = ln; break; }
+      }
+    }
+    if (lineNo == null) for (const ln of lnos) if (Number(opts.addrLines[ln]) > H) { lineNo = ln; break; }
+    if (lineNo == null) for (const ln of lnos) if (Number(opts.addrLines[ln]) <= H) lineNo = ln;
+    const el = lineNo ? box.querySelector(`.codeline:nth-child(${lineNo})`) : null;
+    if (el) {
+      el.classList.add("hl");
+      setTimeout(() => el.scrollIntoView({ block: "center" }), 60);
+    }
+  }
 }
 
 function navigateAddr(addr, name) {
@@ -486,8 +627,27 @@ async function loadStrings(append = false) {
       const row = document.createElement("div");
       row.className = "row";
       row.tabIndex = 0;
+      row.dataset.addr = s.addr;
       row.innerHTML = `<span class="addr">${hexpad(s.addr)}</span><span class="val"><span class="lit">${esc(s.value)}</span></span><span class="meta">${s.length}</span><button class="row-btn" title="${esc(t("hex.send.title"))}">⚗</button>`;
-      row.onclick = () => { S.selectedString = s.value; loadXrefs(s.addr); };
+      row.onclick = () => {
+        S.selectedString = s.value;
+        $$("#list-strings .row").forEach((r) => r.classList.toggle("active", r === row));
+        loadXrefs(s.addr, { focus: true });
+      };
+      // IDA reflex: double-click a string → jump straight into the code using it
+      row.ondblclick = async () => {
+        try {
+          const res = await api(`xrefs/${s.addr}`);
+          const refs = res.to.filter((r) => r.function_addr != null);
+          if (refs.length) {
+            const r0 = refs[0];
+            selectFunction(r0.function_addr, r0.function || hexpad(r0.function_addr), {
+              highlightAddr: r0.addr,
+              highlightTarget: s.addr,
+            });
+          } else toast(t("toast.no_refs"), "info");
+        } catch (e) { toast(e.message, "error"); }
+      };
       row.querySelector(".row-btn").onclick = (e) => {
         e.stopPropagation();
         S.selectedString = s.value;
@@ -513,6 +673,11 @@ async function loadImportsExports() {
         row.innerHTML = which === "imports"
           ? `<span class="name">${esc(it.name)}</span><span class="meta">${esc(it.library || "")}</span>`
           : `<span class="addr">${hexpad(it.addr)}</span><span class="name">${esc(it.name)}</span>`;
+        // X1: click an import → who calls it (via its thunk function)
+        if (which === "imports" && it.addr != null) {
+          row.title = t("imports.xref.title");
+          row.onclick = () => loadXrefs(it.addr, { focus: true });
+        }
         list.appendChild(row);
       }
     } catch (e) { list.innerHTML = `<div class="code-empty">${esc(e.message)}</div>`; }
@@ -565,21 +730,25 @@ function renderOverlay() {
       <div class="sec-meta">${esc(t("ov.hint"))}</div>
     </div>`;
   } else {
-    box.innerHTML = `<div class="overlay-box clean"><div class="overlay-title clean">${esc(t("ov.clean"))}</div></div>`;
+    const coff = Number(tri.coff_symbols || 0);
+    box.innerHTML = `<div class="overlay-box clean"><div class="overlay-title clean">${esc(t("ov.clean"))}</div>` +
+      (coff > 0 ? `<div class="sec-meta">${esc(t("ov.coff", { n: coff.toLocaleString() }))}</div>` : "") +
+      `</div>`;
   }
 }
 
-async function loadXrefs(addr) {
+async function loadXrefs(addr, opts = {}) {
   $("#xrefs-target").textContent = hexa(addr);
+  $("#xrefs-target").dataset.addr = addr;
   const box = $("#xrefs-info");
   box.innerHTML = `<div class="loading">${esc(t("list.loading.refs"))}</div>`;
   try {
-    const res = await api(`function/${addr}/xrefs`);
+    const res = await api(`xrefs/${addr}`);
     let html = "";
     if (res.to.length) {
       html += `<div class="xref-label">${esc(t("xrefs.to"))} (${res.to.length})</div>`;
       html += res.to.slice(0, 40).map((r) =>
-        `<div class="xref-row" tabindex="0" data-addr="${Number(r.addr).toString(16)}"><span class="xref-type">${esc(r.type)}</span><span class="xref-addr">${hexpad(r.addr)}</span><span class="xref-name">${esc(r.function || "")}</span></div>`).join("");
+        `<div class="xref-row" tabindex="0" data-addr="${Number(r.addr).toString(16)}"${r.function_addr != null ? ` data-faddr="${Number(r.function_addr)}" data-fname="${esc(r.function || "")}"` : ""}><span class="xref-type">${esc(r.type)}</span><span class="xref-addr">${hexpad(r.addr)}</span><span class="xref-name">${esc(r.function || "")}</span></div>`).join("");
     } else html += `<div class="insp-empty">${esc(t("xrefs.none"))}</div>`;
     if (res.from.length) {
       html += `<div class="xref-label">${esc(t("xrefs.from"))} (${res.from.length})</div>`;
@@ -589,11 +758,27 @@ async function loadXrefs(addr) {
     box.innerHTML = html;
     box.querySelectorAll(".xref-row").forEach((row) =>
       row.onclick = () => {
-        const a = parseInt(row.dataset.addr, 16);
-        const fn = funcNameByAddr(a);
-        if (fn) selectFunction(a, fn);
-        else showDisasm(a);
+        const target = parseInt(row.dataset.addr, 16);
+        // X1: prefer the containing function — jump into decompiled C, not raw asm
+        if (row.dataset.faddr) {
+          const fa = Number(row.dataset.faddr);
+          selectFunction(fa, row.dataset.fname || funcNameByAddr(fa) || hexpad(fa), {
+            highlightAddr: target,
+            highlightTarget: Number($("#xrefs-target").dataset.addr),
+          });
+        } else {
+          const fn = funcNameByAddr(target);
+          if (fn) selectFunction(target, fn);
+          else showDisasm(target);
+        }
       });
+    if (opts.focus) {
+      const g = $("#insp-xrefs");
+      g.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      g.classList.remove("flash");
+      void g.offsetWidth; // restart the flash animation
+      g.classList.add("flash");
+    }
   } catch (e) { box.innerHTML = `<div class="insp-empty">${esc(e.message)}</div>`; }
 }
 
@@ -1486,6 +1671,7 @@ function handleShortcut(e) {
       if (askResolve) { const r = askResolve; askResolve = null; r(null); }
     }
     document.body.classList.remove("insp-open");
+    closeCtxMenu();
     $("#recent-menu").classList.add("hidden");
     return;
   }
@@ -1572,6 +1758,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#btn-recent").onclick = toggleRecentMenu;
   document.addEventListener("mousedown", (e) => {
     if (!e.target.closest(".recent-wrap")) $("#recent-menu").classList.add("hidden");
+    if (!e.target.closest("#ctx-menu")) closeCtxMenu();
   });
 
   // F5: unpack
@@ -1594,6 +1781,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.addEventListener("lv:langchange", () => {
     if (S.program) {
       renderProgramInfo();
+      renderVerdict();
       renderSections();
       renderOverlay();
       loadConstants();

@@ -1,6 +1,6 @@
 # 开发笔记 & 续作指南（内部文档）
 
-> 状态快照 2026-11-11（v0.2.0 已发布，main 含锁修复 + 10 样本回归）。给下一次继续开发的人（或下一个会话）看的。
+> 状态快照 2026-11-11（v0.2.1 已发布；main 新增「做题链」联动：查壳结论 / 字符串→xref→反编译高亮 / 导入→调用者，v0.3.0 候选）。给下一次继续开发的人（或下一个会话）看的。
 
 ## 当前进度
 
@@ -28,13 +28,24 @@
 - `lvr doctor`、`--ghidra` 硬校验、GHIDRA_INSTALL_DIR 无效则警告后继续扫描、Java 探测（JAVA_HOME → `<ghidra>/.jre` → PATH，要求 major ≥ 21）。
 - 引擎：shutdownJVM 有界化（10s 宽限）；GhidraProject 锁泄漏修复（见踩坑 #1）。
 
+## 做题链（v0.3.0 候选，2026-11-11）
+
+动机来自作者本人做题流程（查壳 → 跑 → 字符串锚点 → 交叉引用 → 反编译），此前字符串与代码完全断链。本次落地的四件事：
+
+1. **查壳 · 结论面板**（inspector 第一组）：区段名签名（UPX/VMP/Themida/ASPack 等 12 种）→ 区段最高熵 ≥7.5 → 附加数据 → ≥6.5 → 干净，五档结论 + 下一步提示。**熵判定优先于 overlay**（压缩载荷本身就是加壳证据，Ferris 的 Cha1 7.93 该直接红）。
+2. **字符串 → xref → 反编译高亮**：单击字符串行 = inspector 显示「谁在用它」并闪现；双击 = 直接跳进引用函数的反编译，**精确高亮引用该字符串的那一行**；右键菜单提供 查引用/送解码/复制。
+3. **导入 → 调用者**：imports 行点击即查 xref（thunk 地址），直接看到「main calls fgets」并可跳进反编译。
+4. **通用 /api/xrefs/{addr}**：数据地址也能查引用（不再局限于函数）。
+
+引擎侧配套：`decompile()` 现在返回 `addr_lines`（行→最小代码地址）/ `addr_lines_hi`（行→最大代码地址）/ `addr_data`（行→首个数据地址）；xrefs 的 to-refs 带 `function`/`function_addr`。前端高亮规则按序：**target 精确命中 addr_data → 引用指令落在某行代码区间内 → 落在空档则归下一行**（参数装配指令在 call 之前，空档属于后面的语句）→ 兜底取 ≤ref 的最后一行。
+
 ## 已知问题（按优先级）
 
-1. **v0.2.0 发行版带着项目锁泄漏 bug**（import 失败 → 后续所有 open LockException）。修复已在 main（`manager.py` 的 `_open_job` try/except BaseException → project.close()），并加了回归测试 `test_bad_file_does_not_poison_engine`。**候选 v0.2.1**：可以把锁修复 + 文档单独发一个小版本。
-2. **常量扫描弱签名**：4 字节签名（如 `AES Rcon[1..4] (BE)`、`CRC-32 poly (LE)`）在任意样本上可能巧合命中（crackme_easy、flower、NotNormalExe 均有此类误报）。constants.py 目前没有最短长度过滤。
+1. **常量扫描弱签名**：4 字节签名（如 `AES Rcon[1..4] (BE)`、`CRC-32 poly (LE)`）在任意样本上可能巧合命中（crackme_easy、flower、NotNormalExe 均有此类误报）。constants.py 目前没有最短长度过滤。
    - **续作方向**：length < 8 的命中标 `weak: true`，前端弱化显示；或要求命中处上下文有附加结构（如 Rcon 后跟 S-box）。
-3. **截图角标待重拍**：README 五张截图仍是 v0.1.0 界面（右下角版本角标）。浏览器面板可用时重拍（hero 空态+收起 drawer / workstation 反编译 / 调用图 / 解码链 / 解包）。
-4. **IAB（ZCode 内置浏览器）的 Playwright `press("Enter")` 不触发页面 keydown**：合成 `KeyboardEvent` 正常。真实浏览器不受影响（synthetic 与 trusted 事件都会触发 handler）。自动化测试该用 `dispatchEvent`。
+2. **截图角标待重拍**：README 五张截图仍是 v0.1.0 界面（右下角版本角标）。浏览器面板可用时重拍（hero 空态+收起 drawer / workstation 反编译+做题链 / 调用图 / 解码链 / 解包）。
+3. **IAB（ZCode 内置浏览器）的 Playwright `press("Enter")` 不触发页面 keydown**：合成 `KeyboardEvent` 正常。真实浏览器不受影响（synthetic 与 trusted 事件都会触发 handler）。自动化测试该用 `dispatchEvent`。
+4. **pyghidra 启动间歇失败（~1/3 概率）**：`_GhidraBundleFinder.find_spec` 递归爆栈（launcher.py:116 无条件 `from ghidra.framework import Application`）。两个诱因：`%TEMP%` 下残留空 `ghidra/` 目录会遮蔽 `import ghidra`（已删）；脚本从 %TEMP% 直接跑也易触发。**从仓库 cwd 用 `python -m lovelyreverse serve` 或 `python -c "exec(...)"` 启动可靠**。另：jpype 的 atexit 钩子是 `_core._JTerminate` 而非 `shutdownJVM`，两者都要 unregister 才不挂死退出（manager.shutdown 已修）。
 
 ## 踩坑记录（v0.2.0 新增）
 
@@ -46,6 +57,10 @@
 4. **Git Bash 会吃掉 PowerShell 的 `$_`**（显示成 extglob）。要跑 PS 就写临时 .ps1，或干脆纯 bash（netstat 找 PID + `taskkill //F //PID`）。
 5. **TaskStop 杀不掉 server 子进程**：杀掉 wrapper 后 python 还在监听 7331。用 netstat 定位 PID 后 `taskkill //F //PID`。
 6. pytest stdout 重定向到文件时是块缓冲，挂住时输出文件为空——用 `py-spy dump --pid` 看栈，别等日志。
+7. **反编译行号推导（v0.3.0 做题链核心坑）**：`getCCodeMarkup()` 返回 ClangFunction，token 的 `getLineParent()` 恒为 None（display 层状态没填）、`getLineNumber()` 根本不存在；`tokenIterator()` 需要 boolean 参数但 **JPype 无法把 Python bool 派发到它**（"No matching overloads"）。最终方案：Python 递归遍历 ClangTokenGroup（子项可能是嵌套 group），用 **数 ClangBreak token** 推导显示行号，`token.getMinAddress()` 取地址。traceback 显示的源码行是 linecache 实时读文件——**改完 manager.py 不重启 server，报错栈看起来像新代码在跑**，别被骗。
+8. **MinGW 的 COFF 符号表 = 假 overlay**：`-g` 构建的 PE 尾部是符号表+字符串表，naive 的 `file_len - sections_end` 会把所有 debug 构建的 crackme 判成「附加数据」。修法：解析 COFF header 的 `PointerToSymbolTable`/`NumberOfSymbols`，算出 `sym_ptr + 20*nsym` 处的字符串表长度并入 end_max；前端 overlay 面板顺带显示「含 COFF 符号表（N 个符号）」。**判定顺序也重要：高熵要排在 overlay 前**（压缩载荷本身就是加壳证据）。
+9. **导入 thunk 地址别用 external symbol**：external symbol 的地址在独立地址空间（offset 0x29 之类），xref 查不到任何东西。真正的「谁调用了 strcmp」要找 **thunk function**：`FunctionManager.getFunctions(True)` 里 `f.isThunk()` 的那批——函数名即导入名，入口在镜像内，调用方 CALL 的就是它。
+10. **`tri.max_entropy` 曾是幽灵字段**：前端读它但后端 triage() 从没提供过 → 熵分支永远不触发。前后端字段约定要有测试钉住。
 
 ## 调用图实现（v0.1.0 重写，机制未变）
 
@@ -74,7 +89,7 @@
 
 ## 续作清单（Roadmap 对应的实现提示）
 
-- **v0.2.1**：把已在 main 的锁修复单独发版（外加文档）。顺手可做弱签名标记（见已知问题 #2）。
+- **v0.3.0 候选**：做题链（已实现，见上节）。发版前可顺手：弱签名标记（已知问题 #1）、xref 面板过滤 0x2e 之类垃圾地址行。
 - **Linux/macOS**：`config.py` 已平台无关（hint 目录按平台分支），主要工作是实际跑一遍 + 文档。
 - **pycdc 集成**：pyc 反编译仍是缺口，解包出 .pyc 后目前只能靠 dis。可考虑捆绑/调用 pycdc。
 - **Pattern Language**：`.reference/ImHex` 有完整 DSL 实现；第一步可以只做「结构体声明 → 结构化视图」。
@@ -117,3 +132,11 @@
 6. decompile-all → 100 个 .c 的 zip 下载 ✅
 7. opcode.bin 打开失败后紧跟打开正常样本 → 成功（锁修复的活体证明）✅
 8. engine 集成测试 7 个全过（含锁回归），全量 125 passed / 72.85s ✅
+
+**做题链（2026-11-11，UI 实测）**：
+
+1. challenge1 双击字符串 "Please input flag: " → 跳进 main 反编译，**精确高亮第 17 行 `printf("Please input flag: ");`**（PARAM ref 0x1400018df 同行）；base64 常量 `dH5z...` → 高亮第 35 行 strcmp ✅
+2. imports 面板点 fgets → xref 显示 `UNCONDITIONAL_CALL 0x14000190a main` ✅
+3. 查壳结论：challenge1 → v-ok「未见加壳特征」（COFF 1535 符号正确排除假 overlay）；crackme_easy → v-ok；c_sm4 → v-bad（熵 7.82 + PyInstaller overlay）；Ferris → v-bad「最大熵 7.93」+ overlay 402,059 B ✅
+4. 字符串右键菜单：查引用（谁在用它）/ 送解码实验室（文本）/ 复制 ✅
+5. 全量 pytest 118 passed / 7 skipped（binfile COFF 修复未破坏任何用例）✅

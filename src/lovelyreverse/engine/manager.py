@@ -263,6 +263,16 @@ class EngineManager:
                         atexit.unregister(jpype.shutdownJVM)
                     except Exception:  # noqa: BLE001
                         pass
+                    # jpype registers its internal _JTerminate as the atexit
+                    # hook (not shutdownJVM itself) - if it stays registered,
+                    # interpreter exit blocks forever on Ghidra's non-daemon
+                    # threads even after our bounded shutdown below.
+                    try:
+                        from jpype import _core
+
+                        atexit.unregister(_core._JTerminate)
+                    except Exception:  # noqa: BLE001
+                        pass
                     jpype.shutdownJVM()
             except Exception:  # noqa: BLE001
                 pass
@@ -453,7 +463,77 @@ class EngineManager:
             if not res.decompileCompleted():
                 raise EngineError(f"decompile failed: {res.getErrorMessage()}")
             code = res.getDecompiledFunction().getC()
-            return {"addr": addr, "name": f.getName(), "code": str(code)}
+
+            # Line-number -> memory address maps. Lets the frontend jump from
+            # a data xref (e.g. a string reference) to the exact decompiled
+            # line that performs the reference.
+            #
+            # Implementation notes (probed on Ghidra 12.2): tokens carry no
+            # usable line number/parent in this API path (getLineParent() is
+            # always None), so we derive display line numbers by counting
+            # ClangBreak tokens (they delimit lines). The markup is a
+            # ClangFunction whose top-level children include nested groups,
+            # so we recurse in Python — ClangTokenGroup.tokenIterator(boolean)
+            # exists but JPype fails to dispatch a Python bool to it.
+            #
+            # Per line we keep the [min, max] range of *code* addresses
+            # (inside the function body) plus the first *data* address seen
+            # (string/constant literals often carry their own data address).
+            # The frontend highlights by: exact data match on the xref
+            # target, then code-range containment of the ref instruction,
+            # then nearest following code line (argument-setup instructions
+            # precede the call they feed, so refs in a gap belong to the
+            # NEXT line, not the previous one).
+            addr_lines: dict[int, int] = {}
+            addr_lines_hi: dict[int, int] = {}
+            addr_data: dict[int, int] = {}
+            markup = res.getCCodeMarkup()
+            if markup is not None:
+                from ghidra.app.decompiler import ClangBreak, ClangTokenGroup
+
+                body = f.getBody()
+                bmin = int(body.getMinAddress().getOffset())
+                bmax = int(body.getMaxAddress().getOffset())
+
+                def _iter_tokens(group):
+                    for item in group:
+                        if isinstance(item, ClangTokenGroup):
+                            yield from _iter_tokens(item)
+                        else:
+                            yield item
+
+                line_no = 1
+                for tk in _iter_tokens(markup):
+                    if isinstance(tk, ClangBreak):
+                        line_no += 1
+                        continue
+                    try:
+                        a2 = tk.getMinAddress()
+                    except Exception:  # noqa: BLE001 - token without address
+                        continue
+                    if a2 is None:
+                        continue
+                    off = int(a2.getOffset())
+                    if off <= 0:
+                        continue
+                    if bmin <= off <= bmax:
+                        cur = addr_lines.get(line_no)
+                        if cur is None or off < cur:
+                            addr_lines[line_no] = off
+                        curh = addr_lines_hi.get(line_no)
+                        if curh is None or off > curh:
+                            addr_lines_hi[line_no] = off
+                    else:
+                        addr_data.setdefault(line_no, off)
+
+            return {
+                "addr": addr,
+                "name": f.getName(),
+                "code": str(code),
+                "addr_lines": addr_lines,
+                "addr_lines_hi": addr_lines_hi,
+                "addr_data": addr_data,
+            }
 
         return self.submit(job, timeout=180)
 
@@ -619,7 +699,20 @@ class EngineManager:
     def _imports_exports(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         program = self._require_program()
         imports: list[dict[str, Any]] = []
+        # Thunk functions (import stubs) live in the binary and are named
+        # after the import they forward to. Their real entry addresses are
+        # what callers CALL, so xrefs against them reveal "who calls this
+        # import". External-space symbol addresses (offset 0x29 etc.) are
+        # NOT usable for that — do not use the symbol table for lookups.
+        thunks: dict[str, int] = {}
         st = program.getSymbolTable()
+        for f in program.getFunctionManager().getFunctions(True):
+            try:
+                if f.isThunk():
+                    thunks.setdefault(str(f.getName()), int(f.getEntryPoint().getOffset()))
+            except Exception:  # noqa: BLE001
+                continue
+
         for sym in st.getAllSymbols(True):
             try:
                 if not sym.isExternal():
@@ -634,6 +727,8 @@ class EngineManager:
                 imports.append({"name": str(sym.getName()), "library": lib})
             except Exception:  # noqa: BLE001
                 continue
+        for imp in imports:
+            imp["addr"] = thunks.get(imp["name"])
         exports: list[dict[str, Any]] = []
         for addr_off in st.getExternalEntryPointIterator():
             try:
@@ -679,6 +774,7 @@ class EngineManager:
                         "addr": ra,
                         "type": str(r.getReferenceType()),
                         "function": fn.getName() if fn else None,
+                        "function_addr": int(fn.getEntryPoint().getOffset()) if fn else None,
                     })
                 return out
 
