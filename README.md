@@ -110,7 +110,7 @@
 到 [Releases](https://github.com/Fiagainster/lovelyreverse/releases) 下载最新的 `.whl`，然后：
 
 ```bash
-pip install lovelyreverse-0.2.0-py3-none-any.whl
+pip install lovelyreverse-0.3.0-py3-none-any.whl
 lvr serve
 ```
 

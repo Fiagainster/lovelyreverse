@@ -1,6 +1,6 @@
 # 开发笔记 & 续作指南（内部文档）
 
-> 状态快照 2026-11-11（v0.2.1 已发布；main =「做题链」+ 右键菜单 v2 + `_lvr/` 工程 + 五张 v0.3.0 截图重拍，v0.3.0 候选就绪）。给下一次继续开发的人（或下一个会话）看的。
+> 状态快照 2026-11-11（**v0.3.0 已发布**：做题链 + 右键菜单 v2 + `_lvr/` 工程 + 五张重拍截图；GitHub Release 带 whl+tar.gz）。给下一次继续开发的人（或下一个会话）看的。
 
 ## 当前进度
 
@@ -28,7 +28,7 @@
 - `lvr doctor`、`--ghidra` 硬校验、GHIDRA_INSTALL_DIR 无效则警告后继续扫描、Java 探测（JAVA_HOME → `<ghidra>/.jre` → PATH，要求 major ≥ 21）。
 - 引擎：shutdownJVM 有界化（10s 宽限）；GhidraProject 锁泄漏修复（见踩坑 #1）。
 
-## 做题链（v0.3.0 候选，2026-11-11）
+## 做题链（v0.3.0，2026-11-11）
 
 动机来自作者本人做题流程（查壳 → 跑 → 字符串锚点 → 交叉引用 → 反编译），此前字符串与代码完全断链。本次落地的四件事：
 
@@ -108,13 +108,13 @@
 
 ## 续作清单（Roadmap 对应的实现提示）
 
-- **v0.3.0 候选**：做题链 + 右键菜单 v2 + `_lvr/` 工程迁移（均已实现，见上节）。发版前可顺手：弱签名标记（已知问题 #1）、xref 面板过滤 0x2e 之类垃圾地址行。
+- **v0.3.1+ 候选**：弱签名标记（已知问题 #1）、xref 面板过滤 0x2e 之类垃圾地址行——v0.3.0 发版时留下的两个顺手活。
 - **Linux/macOS**：`config.py` 已平台无关（hint 目录按平台分支），主要工作是实际跑一遍 + 文档。
 - **pycdc 集成**：pyc 反编译仍是缺口，解包出 .pyc 后目前只能靠 dis。可考虑捆绑/调用 pycdc。
 - **Pattern Language**：`.reference/ImHex` 有完整 DSL 实现；第一步可以只做「结构体声明 → 结构化视图」。
 - **gdb 桥**：Windows 优先方案是 gdbserver（WSL/远程）+ MI 协议 over stdlib；先做「断点/单步/读寄存器/读内存」四件事。
 - **签名库扩充**：`.reference/yara4ida` 的 SIGS 目录有最全的 crypto/hash/压缩签名集，可写转换脚本导入。
-- ~~**Ghidra 数据库复用**~~：已实现（v0.3.0 候选）——`.rep` 工程与样本路径一一映射（样本同级 `_lvr/`），二次打开秒级。可再做的：工程清单页（跨样本浏览 `_lvr/`）、打开旧样本时提示「检测到已有分析工程」。
+- ~~**Ghidra 数据库复用**~~：已实现（v0.3.0）——`.rep` 工程与样本路径一一映射（样本同级 `_lvr/`），二次打开秒级。可再做的：工程清单页（跨样本浏览 `_lvr/`）、打开旧样本时提示「检测到已有分析工程」。
 - **签名库扩充**：`.reference/yara4ida` 的 SIGS 目录有最全的 crypto/hash/压缩签名集，可写转换脚本导入。
 
 ## 开发环境备忘
@@ -167,7 +167,7 @@
 2. challenge1 打开 → `_lvr/challenge1.gpr|.rep|.lock` 出现在样本同级目录（原 `.lvr` 因 Ghidra 拒点开头路径改名）；`/api/program` 返回 `project_dir`，inspector 显示工程目录行 ✅
 3. `node --check` + `ast.parse` 全过；改动后全量 pytest 118 passed / 7 skipped ✅
 
-**发版终检（2026-11-11，v0.3.0 候选定稿）**：
+**发版终检（2026-11-11，v0.3.0 定稿）**：
 
 1. API 冒烟对照作者笔记工作流：锚点字符串 → xref（DATA+PARAM 双引用，带函数入口）→ decompile 行映射（gap 落「下一行」规则正中 `printf("Please input flag: ");`）；fgets thunk → 调用者 main；常量/熵字段齐全 ✅
 2. 五张 README 截图用 v0.3.0 界面重拍（browser-use 后台直存 docs/screenshots/）：hero 空态 / workstation（做题链高亮 + 查壳结论 + `_lvr` 工程目录行）/ 调用图（深度 1 层次布局）/ 解码链（XOR 0x17 → XOR "ATRI" → flag）/ PyInstaller 解包（60 条目 + manifest 预览）✅
