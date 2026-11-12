@@ -39,6 +39,7 @@
 | **✎ decompile** | C 伪代码 + 自研语法高亮；**代码里的函数名/地址可点击跳转**；✎ 重命名 / ✚ 备注 / 复制 / 下载 `.c` |
 | **⌗ disassembly** | 汇编清单（地址/字节/助记符），call 目标可点击跟进 |
 | **◈ call graph** | **函数调用图**（Ghidra 式层次布局）：caller 在上 / callee 在下，层次分层 + 重心排序减少交叉；实线箭头表示调用方向、虚线表示回边；**双击节点增量展开**，滚轮缩放、拖拽平移 |
+| **⚙ 动态调试** | **gdb 桥双传输**（WSL Linux ELF / Windows 本机 PE）：断点（pending 队列，启动自动补挂）、运行/继续/单步/中断、**写寄存器绕反调试**（$rax=0）、全寄存器面板、调用栈、内存读取一键送解码实验室、程序参数与 stdin 暂存 |
 | **⊞ memory hex** | 按内存块原始读取，翻页/跳偏移（**输入完整 vaddr 自动定位所在内存块**）；一键送入解码实验室 |
 | **⚡ raw disasm** | **按执行路径的裸反汇编**（混淆兜底）：任意地址起，capstone 顺着真实执行流解码——无条件 JMP 跟随目标、**CALL 实为 JMP 识别**（压栈返回进垃圾的返回地址标记「死路」跳过）、反调试垃圾字节自动恢复到条件跳转目标；HEX 视图 ⚡ 一键从当前字节起解，跳转目标可点击跟进 |
 | **strings** | Ghidra 识别的字符串，一键送入解码实验室；**单击查引用（谁在用它），双击直接跳进引用函数的反编译并高亮那一行** |
@@ -57,6 +58,7 @@
 - **Overlay / 熵分析**（binwalk 精髓）：纯 Python 解析 PE/ELF 节表，`end_of_raw` 之后的数据判为 overlay；逐节香农熵 + 全文件熵剖面，加壳一眼可见。
 - **PyInstaller 一键解包**（pyinstxtractor 内置化）：识别 CArchive cookie，解出全部条目与 PYZ 模块，pyc 头自动补齐（PEP 552），入口脚本置顶，解包结果落在样本旁 `_lvr/unpacked/`；**只有 MZ/ELF 可执行条目提供「送 Ghidra」**（`.manifest`/`.pyc` 等只读预览），杜绝把非可执行文件塞进引擎导致打开失败。
 - **批量反编译**：一键把全部函数导出为 zip（每个函数一个 `.c`）。
+- **APK 静态分析**：zip 解包落盘 `_lvr/unpacked_apk/` + **dex string pool 提取**（类名/URL/密钥，一键复制/送解码实验室）。
 
 <p align="center">
   <img src="docs/screenshots/decoder.png" width="96%" alt="lovelyreverse decoder lab">

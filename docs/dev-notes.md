@@ -262,3 +262,18 @@
 |---|---|---|---|
 | 13 | HEX 跳转框输完整 vaddr 读越界报错（ram:10090f50） | 只检查当前块包含关系；Ghidra 内存块是碎片化的（segment_2.1 只有 276 字节 ELF 头，0x8048f50 属于 .text） | 在全部块中定位包含地址的块并自动切换，再转块内偏移 |
 | 14 | HEX 跳转框不支持回车 | 只绑了按钮 click | 补 Enter keydown，与裸反汇编地址框一致 |
+
+
+## gdb 桥踩坑（v0.4.0，2026-11-13）
+
+**踩坑 #16 — MI const 停字符集**：解析 `frame={...}` 列表时 const 分支吞掉 `=`/`{`，把 `frame={level="0"` 整个读成一个字符串。const 必须停在 `,}]={`。
+
+**踩坑 #17 — `^running` 是结果记录**：mingw gdb 同步模式没有异步 `*running`——运行态迁移必须在 `^running` 结果记录处做，否则 UI 永远显示「未运行」、wait_stop 立即返回 stale。
+
+**踩坑 #18 — Windows gdb stdio 是 ANSI(GBK)**：MI stdin 发 UTF-8 中文路径 → mojibake → 文件打不开；stdout 回显同样 GBK。io_encoding 按传输选择（wsl=utf-8 / local=mbcs）。程序路径放 gdb argv（CreateProcessW 宽字符 ✓ 实测）而 **不是** MI stdin。样本复制到 %TEMP% 会被 Defender 吞（ThreatID 2147958378 实录，Python open 直接 errno 22）——所以本地装载走 argv 原路径，不复制。
+
+**踩坑 #19 — IFUNC 断点迁移**：`break strcmp` 被 gdb 挪进 libc 的 IFUNC 实现地址（breakpoint-modified notify），而 glibc 自己初始化时就调用 strcmp → 断点在 main 之前狂误触。做题断 `*strcmp@plt`（程序自己的 PLT 桩，只有程序调用会经过）。
+
+**踩坑 #20 — WSL /tmp 挥发性**：VM 空闲自动关闭后 /tmp 清空——fixture 编译产物放 /mnt/d（持久）。另外 Git Bash 的 MSYS 路径转换会把 `/mnt/d/...` 参数改写成 `C:/Program Files/Git/mnt/...`——WSL 命令一律包 `bash -c "..."`。
+
+**设计决策**：gdb 会话独立于引擎 worker 线程（独立进程+独立锁），前端 1.2s 轮询状态而非 websocket；pending 断点队列让「先摆断点再启动」这一调试器直觉成立；fgets 阻塞场景由中断按钮（-exec-interrupt）兜底。
