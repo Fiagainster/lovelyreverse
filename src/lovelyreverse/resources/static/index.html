@@ -85,6 +85,7 @@
       <button class="tab" data-tab="graph" data-i18n="tab.graph">◈ call graph</button>
       <button class="tab" data-tab="hex" data-i18n="tab.hex">⊞ memory hex</button>
       <button class="tab" data-tab="raw" data-i18n="tab.raw">⚡ raw disasm</button>
+      <button class="tab" data-tab="gdb">⛭ 动态调试</button>
       <span class="tab-spring"></span>
       <button class="tab mini" id="btn-decompile-all" data-i18n="decompile.all" data-i18n-title="decompile.all.title">↧ all functions → zip</button>
     </div>
@@ -139,6 +140,63 @@
           <span class="code-title" id="hex-info"></span>
         </div>
         <div class="code" id="code-hex"><div class="code-empty" data-i18n="hex.empty">pick a memory block and read it raw</div></div>
+      </div>
+
+      <div class="tabpane" data-pane="gdb">
+        <div class="code-head gdbbar">
+          <select id="gdb-transport">
+            <option value="wsl">WSL · Linux ELF</option>
+            <option value="local">Windows 本机 gdb</option>
+          </select>
+          <input id="gdb-distro" class="mini-input" value="Ubuntu-22.04" title="WSL 发行版" />
+          <button class="btn btn-primary btn-xs" id="gdb-start">▶ 启动会话</button>
+          <button class="btn btn-xs hidden" id="gdb-exit-btn">⏹ 结束</button>
+          <span class="engine-dot" id="gdb-badge"><span class="dot"></span><span class="dot-label">未启动</span></span>
+          <span class="code-title" id="gdb-stopinfo"></span>
+          <span class="dim" id="gdb-pc"></span>
+        </div>
+        <div class="gdb-args-row">
+          <input id="gdb-args" type="text" spellcheck="false" placeholder="程序参数（可选）" />
+          <input id="gdb-stdin" type="text" spellcheck="false" placeholder="stdin 文本（可选，喂给 fgets/scanf）" />
+          <span class="dim" id="gdb-target"></span>
+        </div>
+        <div class="gdb-grid">
+          <div class="gdb-col">
+            <div class="dec-label">断点</div>
+            <div class="gdb-bp-row">
+              <input id="gdb-bp-input" type="text" spellcheck="false" placeholder="*0x401370 或 main" />
+              <button class="btn btn-xs" id="gdb-bp-add">+ 断点</button>
+            </div>
+            <div class="list gdb-list" id="gdb-breaks"></div>
+            <div class="gdb-controls">
+              <button class="btn btn-primary btn-xs" id="gdb-run">▶ 运行</button>
+              <button class="btn btn-xs" id="gdb-continue">▏▶ 继续</button>
+              <button class="btn btn-xs" id="gdb-next">→ 跳过</button>
+              <button class="btn btn-xs" id="gdb-step">↓ 进入</button>
+              <button class="btn btn-xs" id="gdb-finish">⤒ 出函数</button>
+            </div>
+            <div class="dec-label">调用栈</div>
+            <div class="list gdb-list" id="gdb-stack"></div>
+          </div>
+          <div class="gdb-col">
+            <div class="dec-label">寄存器</div>
+            <div class="list gdb-list gdb-regs" id="gdb-regs"></div>
+          </div>
+          <div class="gdb-col">
+            <div class="dec-label">内存读取
+              <span class="spring"></span>
+              <button class="btn btn-ghost btn-xs hidden" id="gdb-mem-send">⚗ 送解码</button>
+            </div>
+            <div class="gdb-bp-row">
+              <input id="gdb-mem-expr" type="text" spellcheck="false" placeholder="$rsp 或 0x401370" />
+              <input id="gdb-mem-len" class="mini-input" value="128" title="字节数" />
+              <button class="btn btn-xs" id="gdb-mem-read">读取</button>
+            </div>
+            <div class="list gdb-list" id="gdb-mem"></div>
+            <div class="dec-label">gdb 控制台</div>
+            <div class="list gdb-console" id="gdb-console"></div>
+          </div>
+        </div>
       </div>
 
       <div class="tabpane" data-pane="raw">
@@ -349,7 +407,7 @@
 <div id="modal-unpack" class="modal-backdrop hidden">
   <div class="modal-card modal-wide">
     <div class="modal-head">
-      <span data-i18n="unpack.btn">unpack PyInstaller</span>
+      <span id="unpack-kind" data-i18n="unpack.btn">unpack PyInstaller</span>
       <span class="spring"></span>
       <button class="btn btn-xs hidden" id="unpack-ghidra" data-i18n="unpack.open_ghidra">send to Ghidra</button>
       <button class="modal-x" data-close>✕</button>

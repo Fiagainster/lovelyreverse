@@ -10,7 +10,9 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -123,6 +125,81 @@ class AppState:
         self.file_bytes: bytes | None = None
         self.triage_info: dict[str, Any] | None = None
         self.source_path: str | None = None
+        self.gdb_session: Any = None          # lovelyreverse.gdb.session.GdbSession
+        self._gdb_env_cache: dict[str, Any] = {}
+        self._gdb_probing = False
+
+    # ---- gdb bridge helpers -------------------------------------------------
+
+    def gdb_env(self, background: bool = True) -> dict[str, Any]:
+        """Availability of both transports, probed once and cached.
+
+        wsl.exe probes take 5-20s, far too slow for a request thread — the
+        first call kicks off a daemon probe and returns {"probing": True}
+        until it lands.  Call with background=False to probe inline (tests).
+        """
+        if not self._gdb_env_cache:
+            if background and not self._gdb_probing:
+                self._gdb_probing = True
+                threading.Thread(target=self.gdb_env, kwargs={"background": False},
+                                 daemon=True).start()
+                return {"probing": True}
+            self._gdb_probing = True
+            from lovelyreverse.gdb.session import find_local_gdb
+
+            local = find_local_gdb()
+            wsl_ok = False
+            distros: list[str] = []
+            try:
+                env = dict(os.environ, WSL_UTF8="1")
+                out = subprocess.run(
+                    ["wsl", "-l", "-q"], capture_output=True, text=True,
+                    timeout=20, env=env,
+                )
+                names = [ln.strip() for ln in out.stdout.replace("\x00", "").splitlines()
+                         if ln.strip() and not ln.strip().startswith("wsl:")]
+                distros = names
+            except Exception:  # noqa: BLE001 — WSL missing entirely
+                distros = []
+            if distros:
+                probe = distros[0]
+                if any(d.startswith("Ubuntu") for d in distros):
+                    probe = next(d for d in distros if d.startswith("Ubuntu"))
+                try:
+                    r = subprocess.run(
+                        ["wsl", "-d", probe, "--", "gdb", "--version"],
+                        capture_output=True, text=True, timeout=30, env=env,
+                    )
+                    wsl_ok = r.returncode == 0
+                except Exception:  # noqa: BLE001
+                    wsl_ok = False
+            self._gdb_env_cache = {
+                "probing": False,
+                "local_gdb": local,
+                "local_ok": bool(local),
+                "wsl_ok": wsl_ok,
+                "distros": distros,
+            }
+        return self._gdb_env_cache
+
+    def gdb_start(self, transport: str, distro: str, args: str, stdin_text: str) -> dict[str, Any]:
+        from lovelyreverse.gdb.session import GdbSession, GdbError
+
+        if self.gdb_session is not None:
+            try:
+                st = self.gdb_session.status()
+                if not st["dead"]:
+                    raise GdbError("a gdb session is already active — end it first")
+            except GdbError:
+                raise
+            except Exception:  # noqa: BLE001 — dead session object, replace it
+                self.gdb_session = None
+        if not self.source_path:
+            raise GdbError("no program loaded — open a binary first")
+        sess = GdbSession(transport=transport, distro=distro)
+        sess.start(self.source_path)
+        self.gdb_session = sess
+        return sess.load(self.source_path, args=args, stdin_text=stdin_text)
 
     # ---- shared handlers used by both routes and jobs
 
@@ -325,6 +402,48 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
             if m:
                 return self._json(state.engine.xrefs(int(m.group(1))))
 
+            # ----- gdb bridge (dynamic debugging)
+            if path == "/api/gdb/env":
+                return self._json(state.gdb_env())
+
+            if path == "/api/gdb/state":
+                sess = state.gdb_session
+                if sess is None:
+                    return self._json({"active": False, "env": state.gdb_env()})
+                return self._json({"active": True, "status": sess.status()})
+
+            if path == "/api/gdb/registers":
+                if state.gdb_session is None:
+                    return self._error("no gdb session", 409)
+                return self._json({"registers": state.gdb_session.registers()})
+
+            if path == "/api/gdb/breaks":
+                if state.gdb_session is None:
+                    return self._error("no gdb session", 409)
+                return self._json({"items": state.gdb_session.list_breaks()})
+
+            if path == "/api/gdb/stack":
+                if state.gdb_session is None:
+                    return self._error("no gdb session", 409)
+                return self._json({"items": state.gdb_session.stack()})
+
+            if path == "/api/gdb/log":
+                if state.gdb_session is None:
+                    return self._error("no gdb session", 409)
+                return self._json({"items": state.gdb_session.console[-120:]})
+
+            if path == "/api/gdb/memory":
+                if state.gdb_session is None:
+                    return self._error("no gdb session", 409)
+                expr = q("expr")
+                if not expr:
+                    return self._error("expr required")
+                import base64 as b64
+
+                data = state.gdb_session.read_memory(expr, qi("len", 128))
+                return self._json({"expr": expr, "len": len(data),
+                                   "data_b64": b64.b64encode(data).decode()})
+
             # ----- memory
             if path == "/api/memory/blocks":
                 return self._json({"items": state.engine.memory_blocks()})
@@ -410,6 +529,77 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
 
             return self._error("unknown api route", 404)
 
+        def _route_gdb_post(self, path: str, body: dict[str, Any]) -> Any:
+            """POST routes for the gdb bridge. Returns a response or None."""
+            if path == "/api/gdb/start":
+                transport = str(body.get("transport", "wsl"))
+                if transport not in ("wsl", "local"):
+                    return self._error("transport must be wsl|local")
+                distro = str(body.get("distro", "Ubuntu-22.04"))
+                args = str(body.get("args", ""))
+                stdin_text = str(body.get("stdin", ""))
+                try:
+                    info = state.gdb_start(transport, distro, args, stdin_text)
+                except Exception as e:  # noqa: BLE001 — surface boot errors verbatim
+                    return self._error(f"{type(e).__name__}: {e}", 500)
+                return self._json({"ok": True, "info": info, "status": state.gdb_session.status()})
+
+            if path == "/api/gdb/exec":
+                sess = state.gdb_session
+                if sess is None:
+                    return self._error("no gdb session", 409)
+                action = str(body.get("action", ""))
+                mapping = {"run": sess.run, "continue": sess.continue_,
+                           "next": sess.next_, "step": sess.step_, "finish": sess.finish}
+                if action not in mapping:
+                    return self._error("action must be run|continue|next|step|finish")
+                try:
+                    res = mapping[action]()
+                except Exception as e:  # noqa: BLE001
+                    return self._error(f"{type(e).__name__}: {e}", 500)
+                return self._json({"ok": True, **res, "status": sess.status()})
+
+            if path == "/api/gdb/break":
+                sess = state.gdb_session
+                if sess is None:
+                    return self._error("no gdb session", 409)
+                loc = str(body.get("loc", "")).strip()
+                try:
+                    return self._json({"ok": True, "bkpt": sess.insert_break(loc)})
+                except Exception as e:  # noqa: BLE001
+                    return self._error(f"{type(e).__name__}: {e}", 500)
+
+            if path == "/api/gdb/break/delete":
+                sess = state.gdb_session
+                if sess is None:
+                    return self._error("no gdb session", 409)
+                try:
+                    sess.delete_break(str(body.get("number", "")))
+                except Exception as e:  # noqa: BLE001
+                    return self._error(f"{type(e).__name__}: {e}", 500)
+                return self._json({"ok": True})
+
+            if path == "/api/gdb/eval":
+                sess = state.gdb_session
+                if sess is None:
+                    return self._error("no gdb session", 409)
+                expr = str(body.get("expr", "")).strip()
+                if not expr:
+                    return self._error("expr required")
+                try:
+                    return self._json({"value": sess.evaluate(expr)})
+                except Exception as e:  # noqa: BLE001
+                    return self._error(f"{type(e).__name__}: {e}", 500)
+
+            if path == "/api/gdb/exit":
+                sess = state.gdb_session
+                if sess is not None:
+                    sess.exit()
+                    state.gdb_session = None
+                return self._json({"ok": True})
+
+            return None
+
         def _route_post(self) -> None:
             url = urlparse(self.path)
             path = url.path
@@ -432,6 +622,11 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                 return self._json({"path": str(target)})
 
             body = self._body()
+
+            # gdb bridge POST routes (start/exec/break/eval/exit)
+            gdb_resp = self._route_gdb_post(path, body)
+            if gdb_resp is not None:
+                return gdb_resp
 
             if path == "/api/open":
                 src = str(body.get("path", "")).strip()
@@ -537,6 +732,64 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     return unpack(p, outdir=outdir, progress=lambda s: setattr(job, "progress", s))
 
                 return self._json({"job": state.jobs.spawn("unpack-pyinstaller", target)})
+
+            # ----- APK unpack (static: zip entries + dex string pools)
+            if path == "/api/unpack/apk":
+                src = str(body.get("path", "")).strip() or (state.source_path or "")
+                if not src:
+                    return self._error("path required")
+                p = Path(src)
+                if not p.is_file():
+                    return self._error(f"file not found: {src}")
+
+                def apk_target(job: Job):
+                    import zipfile
+
+                    from lovelyreverse.util.dex import dex_info, dex_strings, looks_like_dex
+
+                    job.progress = "opening zip container"
+                    outdir = p.parent / "_lvr" / "unpacked_apk" / f"{p.stem}_{int(time.time())}"
+                    outdir.mkdir(parents=True, exist_ok=True)
+                    entries: list[dict[str, Any]] = []
+                    dex_strings_map: dict[str, list[str]] = {}
+                    dex_meta: dict[str, Any] = {}
+                    with zipfile.ZipFile(p) as zf:
+                        infos = zf.infolist()
+                        for i, zi in enumerate(infos):
+                            job.progress = f"extracting {i + 1}/{len(infos)}"
+                            name = zi.filename
+                            if name.endswith("/") or "\\" in name or ".." in name.replace("\\", "/"):
+                                continue  # dir entries / traversal guard
+                            kind = ("dex" if name.endswith(".dex")
+                                    else "manifest" if name == "AndroidManifest.xml"
+                                    else "resource" if name == "resources.arsc"
+                                    else "native" if name.endswith(".so")
+                                    else "file")
+                            entries.append({"name": name, "size": zi.file_size, "type": kind})
+                            target_path = (outdir / name)
+                            target_path.parent.mkdir(parents=True, exist_ok=True)
+                            try:
+                                target_path.write_bytes(zf.read(name))
+                            except Exception:  # noqa: BLE001 — bad entry, keep going
+                                continue
+                            if kind == "dex":
+                                try:
+                                    blob = target_path.read_bytes()
+                                    if looks_like_dex(blob):
+                                        dex_meta[name] = dex_info(blob)
+                                        dex_strings_map[name] = dex_strings(blob, limit=4000)
+                                except Exception:  # noqa: BLE001 — tampered dex
+                                    dex_meta[name] = {"error": "unparsable"}
+                    job.progress = f"{len(entries)} entries"
+                    return {
+                        "outdir": str(outdir),
+                        "entries": entries,
+                        "dex": dex_meta,
+                        "dex_strings": dex_strings_map,
+                        "apk": True,
+                    }
+
+                return self._json({"job": state.jobs.spawn("unpack-apk", apk_target)})
 
             return self._error("unknown api route", 404)
 

@@ -1134,6 +1134,285 @@ async function showRawDisasm(addr) {
   } catch (e) { box.innerHTML = `<div class="code-empty">${esc(e.message)}</div>`; }
 }
 
+/* ═══════════════════════ gdb bridge (dynamic debugging) ═══════════════════════ */
+
+const GD = { poll: 0, memBytes: null, pc: null };
+
+function gdbBadge(mode, label) {
+  const b = $("#gdb-badge");
+  b.className = `engine-dot ${mode}`;
+  b.querySelector(".dot-label").textContent = label;
+}
+
+const GDB_STOP_I18N = [
+  [/^breakpoint-hit/, "gdb.stop.bp"],
+  [/^end-stepping-range/, "gdb.stop.step"],
+  [/^function-finished/, "gdb.stop.finish"],
+  [/^exited-normally/, "gdb.stop.exit0"],
+  [/^exited/, "gdb.stop.exit"],
+  [/^signal/, "gdb.stop.signal"],
+];
+
+function gdbStopText(reason) {
+  for (const [re, key] of GDB_STOP_I18N)
+    if (re.test(reason || "")) return t(key);
+  return reason || "";
+}
+
+async function gdbApi(path, opts) {
+  return api("gdb/" + path, opts);
+}
+
+function gdbRenderStatus(st) {
+  const empty = !st.loaded && !st.dead && !st.running && !st.stop;
+  if (st.dead) gdbBadge("error", t("gdb.badge.dead"));
+  else if (st.exited) gdbBadge("ready", t("gdb.badge.exited"));
+  else if (st.running) gdbBadge("busy", t("gdb.badge.running"));
+  else if (st.stop) gdbBadge("ready", t("gdb.badge.stopped"));
+  else if (st.loaded) gdbBadge("ready", t("gdb.badge.loaded"));
+  else gdbBadge("idle", t("gdb.badge.idle"));
+
+  const si = $("#gdb-stopinfo");
+  const stop = st.stop;
+  if (stop && stop.reason && !st.exited) {
+    const addrHex = stop.addr ? String(stop.addr).replace(/^0x/, "") : null;
+    si.innerHTML = `<span class="gdb-stop-hit">${esc(gdbStopText(stop.reason))}</span>` +
+      (stop.func ? ` @ <b>${esc(stop.func)}</b>` : "") +
+      (addrHex ? ` · <span class="a" data-pc="${addrHex}">${hexpad(parseInt(addrHex, 16))}</span>` : "");
+    const link = si.querySelector(".a");
+    if (link) link.onclick = () => showDisasm(parseInt(link.dataset.pc, 16));
+    $("#gdb-pc").textContent = "";
+  } else if (st.exited) {
+    si.innerHTML = `<span class="gdb-stop-hit">${esc(t("gdb.stop.exit0"))}</span>`;
+    $("#gdb-pc").textContent = "";
+  } else if (st.running) {
+    si.textContent = t("gdb.stop.running");
+    $("#gdb-pc").textContent = "";
+  } else {
+    si.textContent = "";
+    $("#gdb-pc").textContent = "";
+  }
+  $("#gdb-target").textContent = st.program ? "⇲ " + st.program.split(/[\\/]/).pop() : "";
+  $("#gdb-exit-btn").classList.remove("hidden");
+  $("#gdb-start").classList.add("hidden");
+}
+
+function gdbRenderBreaks(items) {
+  const box = $("#gdb-breaks");
+  if (!items.length) { box.innerHTML = `<div class="insp-empty">${esc(t("gdb.no_bp"))}</div>`; return; }
+  box.innerHTML = items.map((b) => {
+    const a = b.addr ? String(b.addr).replace(/^0x/, "") : "";
+    return `<div class="row" data-num="${esc(b.number)}" data-addr="${a}">
+      <span class="addr">#${esc(b.number)}</span>
+      <span class="name">${esc(b.func || b.orig_loc || b.addr || "")}</span>
+      <button class="op-rm" data-del="${esc(b.number)}" title="✕">✕</button>
+    </div>`;
+  }).join("");
+  box.querySelectorAll("[data-del]").forEach((btn) =>
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      await gdbApi("break/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ number: btn.dataset.del }) });
+      gdbRefreshLists();
+    });
+  box.querySelectorAll(".row").forEach((row) =>
+    row.onclick = (e) => {
+      if (e.target.closest("[data-del]")) return;
+      const a = row.dataset.addr && parseInt(row.dataset.addr, 16);
+      if (a) showDisasm(a);
+    });
+}
+
+const GDB_GPR = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+                 "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip",
+                 "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip"];
+
+function gdbRenderRegs(regs) {
+  const box = $("#gdb-regs");
+  const keys = Object.keys(regs);
+  if (!keys.length) { box.innerHTML = `<div class="insp-empty">${esc(t("gdb.stopped_only"))}</div>`; return; }
+  const ordered = [...GDB_GPR.filter((k) => keys.includes(k)), ...keys.filter((k) => !GDB_GPR.includes(k))];
+  const pcName = keys.includes("rip") ? "rip" : (keys.includes("eip") ? "eip" : null);
+  box.innerHTML = ordered.map((k) =>
+    `<span class="gdb-reg${k === pcName ? " pc" : ""}" title="${esc(t("toast.copied"))}"><b>${esc(k)}</b> ${esc(regs[k])}</span>`).join("");
+  box.querySelectorAll(".gdb-reg").forEach((el) =>
+    el.onclick = () => {
+      navigator.clipboard.writeText(el.textContent.replace(/^\S+\s+/, "")).then(() => toast(t("toast.copied"), "ok", 1200));
+    });
+  if (pcName) {
+    const pcv = parseInt(regs[pcName], 16);
+    if (pcv) { GD.pc = pcv; $("#gdb-pc").textContent = "PC " + hexpad(pcv); }
+  }
+}
+
+function gdbRenderStack(items) {
+  const box = $("#gdb-stack");
+  if (!items.length) { box.innerHTML = `<div class="insp-empty">${esc(t("gdb.stopped_only"))}</div>`; return; }
+  box.innerHTML = items.map((f) =>
+    `<div class="row" data-addr="${String(f.addr || "").replace(/^0x/, "")}">
+      <span class="addr">#${esc(f.level ?? "?")}</span>
+      <span class="name">${esc(f.func || "?")}</span>
+      <span class="meta">${esc(String(f.addr || ""))}</span>
+    </div>`).join("");
+  box.querySelectorAll(".row").forEach((row) =>
+    row.onclick = () => {
+      const a = row.dataset.addr && parseInt(row.dataset.addr, 16);
+      if (a) showDisasm(a);
+    });
+}
+
+function gdbRenderMem(data) {
+  GD.memBytes = data;
+  const box = $("#gdb-mem");
+  let html = "";
+  for (let i = 0; i < data.length; i += 16) {
+    const chunk = data.slice(i, i + 16);
+    const hx = [...chunk].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    const asc = [...chunk].map((b) => (b >= 0x20 && b < 0x7f) ? esc(String.fromCharCode(b)) : "·").join("");
+    html += `<div class="hexgrid"><span class="hexaddr">${hexpad(i)}</span>  ${hx}  <span class="hexaddr">|</span><span class="hexascii">${asc}</span><span class="hexaddr">|</span></div>`;
+  }
+  box.innerHTML = html || `<div class="insp-empty">—</div>`;
+  const send = $("#gdb-mem-send");
+  send.classList.remove("hidden");
+  send.onclick = () => {
+    const hexText = [...data].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    sendToDecoder(hexText, "hex");
+  };
+}
+
+function gdbRenderConsole(items) {
+  const box = $("#gdb-console");
+  box.textContent = items.join("\n");
+  box.scrollTop = box.scrollHeight;
+}
+
+async function gdbRefreshLists() {
+  if (!GD.poll) return;
+  const [bps, stack, log] = await Promise.all([
+    gdbApi("breaks").catch(() => null),
+    gdbApi("stack").catch(() => null),
+    gdbApi("log").catch(() => null),
+  ]);
+  if (bps) gdbRenderBreaks(bps.items);
+  if (stack) gdbRenderStack(stack.items);
+  if (log) gdbRenderConsole(log.items);
+}
+
+async function gdbPoll() {
+  let data;
+  try {
+    data = await gdbApi("state");
+  } catch { return; }
+  if (!data.active) {
+    if (GD.poll) { clearInterval(GD.poll); GD.poll = 0; }
+    gdbBadge("idle", t("gdb.badge.idle"));
+    $("#gdb-exit-btn").classList.add("hidden");
+    $("#gdb-start").classList.remove("hidden");
+    return;
+  }
+  const st = data.status;
+  gdbRenderStatus(st);
+  if (st.stop && !st.running && !st.exited) {
+    try {
+      const regs = (await gdbApi("registers")).registers;
+      gdbRenderRegs(regs);
+    } catch { /* target running again */ }
+    await gdbRefreshLists();
+  } else if (st.running) {
+    $("#gdb-regs").innerHTML = `<div class="insp-empty">${esc(t("gdb.running_hint"))}</div>`;
+    $("#gdb-stack").innerHTML = "";
+  }
+}
+
+async function gdbEnsurePolling() {
+  if (GD.poll) return;
+  GD.poll = setInterval(gdbPoll, 1200);
+  await gdbPoll();
+}
+
+async function gdbStart() {
+  const transport = $("#gdb-transport").value;
+  const distro = $("#gdb-distro").value.trim() || "Ubuntu-22.04";
+  const args = $("#gdb-args").value.trim();
+  const stdinText = $("#gdb-stdin").value;
+  setBusy(true, "gdb");
+  logLine(`gdb session starting (${transport})`, "hi");
+  try {
+    const res = await gdbApi("start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transport, distro, args, stdin: stdinText }),
+    });
+    gdbRenderStatus(res.status);
+    await gdbEnsurePolling();
+    gdbRefreshLists();
+    toast(t("gdb.toast.started"), "ok", 2000);
+    logLine(`gdb session active (${transport}, ${res.info.program})`, "ok");
+  } catch (e) {
+    toast("gdb: " + e.message, "error", 6000);
+    logLine("gdb start failed: " + e.message, "err");
+  } finally { setBusy(false); }
+}
+
+async function gdbExec(action) {
+  try {
+    await gdbApi("exec", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    await gdbPoll();
+  } catch (e) { toast("gdb: " + e.message, "error"); }
+}
+
+function gdbExit() {
+  gdbApi("exit", { method: "POST" }).catch(() => {});
+  clearInterval(GD.poll); GD.poll = 0;
+  gdbBadge("idle", t("gdb.badge.idle"));
+  $("#gdb-stopinfo").textContent = "";
+  $("#gdb-pc").textContent = "";
+  $("#gdb-target").textContent = "";
+  $("#gdb-start").classList.remove("hidden");
+  $("#gdb-exit-btn").classList.add("hidden");
+  ["#gdb-breaks", "#gdb-regs", "#gdb-stack", "#gdb-mem", "#gdb-console"].forEach(
+    (id) => { $(id).innerHTML = `<div class="insp-empty">—</div>`; });
+  GD.memBytes = null;
+  logLine("gdb session closed", "hi");
+}
+
+function wireGdb() {
+  $("#gdb-start").onclick = gdbStart;
+  $("#gdb-exit-btn").onclick = gdbExit;
+  $("#gdb-run").onclick = () => gdbExec("run");
+  $("#gdb-continue").onclick = () => gdbExec("continue");
+  $("#gdb-next").onclick = () => gdbExec("next");
+  $("#gdb-step").onclick = () => gdbExec("step");
+  $("#gdb-finish").onclick = () => gdbExec("finish");
+  $("#gdb-bp-add").onclick = async () => {
+    const loc = $("#gdb-bp-input").value.trim();
+    if (!loc) return;
+    try {
+      await gdbApi("break", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ loc }) });
+      $("#gdb-bp-input").value = "";
+      gdbRefreshLists();
+    } catch (e) { toast("gdb: " + e.message, "error"); }
+  };
+  $("#gdb-bp-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("#gdb-bp-add").click(); }
+  });
+  $("#gdb-mem-read").onclick = async () => {
+    const expr = $("#gdb-mem-expr").value.trim();
+    const len = parseInt($("#gdb-mem-len").value, 10) || 128;
+    if (!expr) return;
+    try {
+      const res = await gdbApi(`memory?expr=${encodeURIComponent(expr)}&len=${len}`);
+      gdbRenderMem(b64ToBytes(res.data_b64));
+    } catch (e) { toast("gdb: " + e.message, "error"); }
+  };
+  $("#gdb-mem-expr").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("#gdb-mem-read").click(); }
+  });
+}
+
 /* ═══════════════════════ decoder lab ═══════════════════════ */
 
 const OPS = [
@@ -2017,8 +2296,12 @@ async function openUnpackModal() {
   meta.textContent = "…";
   list.innerHTML = "";
   prev.textContent = "";
+  const curPath = (S.program && S.program.source_path) || $("#path-input").value || "";
+  const isApk = /\.apk$/i.test(curPath) || (S.triage?.sniff?.format === "ZIP" && /\.apk$/i.test(S.sourcePath || ""));
+  const route = isApk ? "unpack/apk" : "unpack/pyinstaller";
+  $("#unpack-kind").textContent = isApk ? "解包 APK" : "解包 PyInstaller";
   try {
-    const { job } = await api("unpack/pyinstaller", {
+    const { job } = await api(route, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),   // server uses the currently open binary
@@ -2035,6 +2318,7 @@ async function openUnpackModal() {
 function renderUnpackResult(m) {
   if (!m || !m.outdir) { $("#unpack-meta").textContent = t("unpack.notpy"); return; }
   unpackOutdir = m.outdir;
+  if (m.apk) { renderUnpackApk(m); return; }
   const bits = [m.pyinstaller || "PyInstaller", `Python ${m.python || "?"}`,
     `${m.total} ${t("unpack.entries")}`];
   if (m.pyz_modules) bits.push(`PYZ ${m.pyz_modules}`);
@@ -2051,6 +2335,41 @@ function renderUnpackResult(m) {
   $("#unpack-preview").textContent = t("unpack.pick");
   $$("#unpack-list .row").forEach((row) =>
     row.onclick = () => previewUnpackedFile(row.dataset.name));
+}
+
+function renderUnpackApk(m) {
+  const bits = [`APK`, `${m.entries.length} ${t("unpack.entries")}`];
+  const dexes = Object.keys(m.dex || {});
+  if (dexes.length) bits.push(`${dexes.length} dex`);
+  $("#unpack-meta").textContent = bits.join(" · ");
+  const typeChip = (t) => t === "dex" ? "★" : t === "manifest" ? "M" : t === "native" ? "so" : "·";
+  $("#unpack-list").innerHTML = m.entries.map((en) =>
+    `<div class="row" tabindex="0" data-name="${esc(en.name)}" data-kind="${esc(en.type)}">
+      <span class="addr">${typeChip(en.type)}</span>
+      <span class="name">${esc(en.name)}</span>
+      <span class="meta">${fmtSize(en.size)}</span>
+    </div>`).join("");
+  $("#unpack-preview").textContent = t("unpack.pick");
+  $$("#unpack-list .row").forEach((row) =>
+    row.onclick = () => {
+      const name = row.dataset.name;
+      if (row.dataset.kind === "dex" && (m.dex_strings || {})[name]) {
+        const strs = m.dex_strings[name] || [];
+        const full = (unpackOutdir ? unpackOutdir.replace(/[\/]+$/, "") + "\\" : "") + name;
+        const NL = String.fromCharCode(10);
+        $("#unpack-preview").innerHTML =
+          `<div class="dec-label">${esc(name)} — ${strs.length} strings <span class="spring"></span>
+             <button class="btn btn-xs" id="apk-copy-strs">⧉ ${esc(t("toast.copied"))}</button>
+             <button class="btn btn-ghost btn-xs" id="apk-to-lab">⚗ ${esc(t("dec.send_str"))}</button></div>
+           <div class="prev-path"><code>${esc(full)}</code></div>
+           <div class="apk-strings">${strs.map((x) => esc(x)).join(NL)}</div>`;
+        $("#apk-copy-strs").onclick = () =>
+          navigator.clipboard.writeText(strs.join(NL)).then(() => toast(t("toast.copied"), "ok", 1500));
+        $("#apk-to-lab").onclick = () => sendToDecoder(strs.join(NL), "text");
+      } else {
+        previewUnpackedFile(name);
+      }
+    });
 }
 
 async function previewUnpackedFile(name) {
@@ -2140,11 +2459,13 @@ window.addEventListener("DOMContentLoaded", async () => {
       fitGraph();
       pokeGraph();
     }
+    if (tab === "gdb") gdbEnsurePolling();
   });
   wireTabs("#drawer-tabs", "#drawer-body");
   wireResizer('[data-resize="left"]', "--left-w", 180, 520);
   wireResizer('[data-resize="right"]', "--right-w", 200, 560);
   wireGraph();
+  wireGdb();
   $("#btn-show-graph").onclick = () => {
     if (S.currentFunc) {
       switchCenter("graph");

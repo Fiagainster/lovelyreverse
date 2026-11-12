@@ -926,3 +926,61 @@ body.dragging::after {
   }
   body.insp-open #right { transform: translateX(0); }
 }
+
+
+/* ─────────────────────────── gdb bridge ─────────────────────────── */
+
+.gdbbar select { max-width: 20ch; }
+.gdb-args-row {
+  display: flex;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+}
+.gdb-args-row input { flex: 1; min-width: 0; }
+#gdb-target { font-size: 11px; margin-left: 4px; white-space: nowrap; }
+.gdb-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1.1fr;
+  gap: 10px;
+  padding: 8px 10px;
+  min-height: 0;
+  overflow: hidden;
+}
+.gdb-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+.gdb-bp-row { display: flex; gap: 6px; align-items: center; }
+.gdb-bp-row input { flex: 1; min-width: 0; }
+.gdb-list {
+  flex: 1;
+  min-height: 60px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg0);
+  padding: 3px 0;
+  overflow-y: auto;
+}
+.gdb-controls { display: flex; gap: 6px; flex-wrap: wrap; }
+.gdb-console {
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 4px 8px !important;
+}
+.gdb-regs { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 4px 8px !important; align-content: flex-start; }
+.gdb-reg { font-size: 11.5px; white-space: nowrap; }
+.gdb-reg b { color: var(--cyan); font-weight: 600; }
+.gdb-reg.pc b { color: var(--rose); }
+
+.apk-strings {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow-y: auto;
+  color: var(--green, #0a7d32);
+}
