@@ -314,6 +314,7 @@ class GdbSession:
             try:
                 self.proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
+                # a target blocked on stdin keeps sync-mode gdb busy — kill hard
                 self.proc.kill()
         with self._state_lock:
             self.state["running"] = False
@@ -367,6 +368,16 @@ class GdbSession:
         self._require_stopped("stepping")
         self.cmd("-exec-finish")
         return {"running": True}
+
+    def interrupt(self) -> dict[str, Any]:
+        """Stop a running target (Ctrl-C equivalent).  In sync-mode gdb this
+        goes through the console escape, which Linux native handles even
+        while the target runs."""
+        try:
+            self._send_line("-exec-interrupt")
+        except GdbError:
+            raise
+        return {"stopping": True}
 
     def wait_stop(self, timeout: float = 10.0) -> dict[str, Any] | None:
         """Poll helper: wait until the target reports a stop."""

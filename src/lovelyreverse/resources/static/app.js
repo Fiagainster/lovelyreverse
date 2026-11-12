@@ -1136,7 +1136,7 @@ async function showRawDisasm(addr) {
 
 /* ═══════════════════════ gdb bridge (dynamic debugging) ═══════════════════════ */
 
-const GD = { poll: 0, memBytes: null, pc: null };
+const GD = { poll: 0, memBytes: null, pc: null, pendingBps: [] };
 
 function gdbBadge(mode, label) {
   const b = $("#gdb-badge");
@@ -1199,7 +1199,15 @@ function gdbRenderStatus(st) {
 
 function gdbRenderBreaks(items) {
   const box = $("#gdb-breaks");
-  if (!items.length) { box.innerHTML = `<div class="insp-empty">${esc(t("gdb.no_bp"))}</div>`; return; }
+  if (!items.length && !GD.pendingBps.length) {
+    box.innerHTML = `<div class="insp-empty">${esc(t("gdb.no_bp"))}</div>`;
+    return;
+  }
+  if (GD.pendingBps.length && !items.length) {
+    box.innerHTML = GD.pendingBps.map((loc, i) =>
+      `<div class="row" data-pending="${i}"><span class="addr">⏳</span><span class="name">${esc(loc)}</span><span class="meta">pending</span></div>`).join("");
+    return;
+  }
   box.innerHTML = items.map((b) => {
     const a = b.addr ? String(b.addr).replace(/^0x/, "") : "";
     return `<div class="row" data-num="${esc(b.number)}" data-addr="${a}">
@@ -1225,6 +1233,16 @@ function gdbRenderBreaks(items) {
 const GDB_GPR = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
                  "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip",
                  "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip"];
+
+async function gdbSetExpr(expr) {
+  if (!expr) return;
+  try {
+    await gdbApi("set", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expr }) });
+    toast(t("gdb.toast.set", { expr }), "ok", 1600);
+    await gdbPoll();
+  } catch (e) { toast("gdb: " + e.message, "error"); }
+}
 
 function gdbRenderRegs(regs) {
   const box = $("#gdb-regs");
@@ -1344,6 +1362,14 @@ async function gdbStart() {
     });
     gdbRenderStatus(res.status);
     await gdbEnsurePolling();
+    // replay breakpoints placed before the session existed
+    for (const loc of GD.pendingBps.splice(0)) {
+      try {
+        await gdbApi("break", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ loc }) });
+        logLine(`pending breakpoint planted: ${loc}`, "hi");
+      } catch (e) { toast(`gdb: ${e.message}`, "error"); }
+    }
     gdbRefreshLists();
     toast(t("gdb.toast.started"), "ok", 2000);
     logLine(`gdb session active (${transport}, ${res.info.program})`, "ok");
@@ -1372,6 +1398,10 @@ function gdbExit() {
   $("#gdb-target").textContent = "";
   $("#gdb-start").classList.remove("hidden");
   $("#gdb-exit-btn").classList.add("hidden");
+  $("#gdb-args").disabled = false;
+  $("#gdb-stdin").disabled = false;
+  GD.pendingBps = [];
+  $("#gdb-interrupt").classList.add("hidden");
   ["#gdb-breaks", "#gdb-regs", "#gdb-stack", "#gdb-mem", "#gdb-console"].forEach(
     (id) => { $(id).innerHTML = `<div class="insp-empty">—</div>`; });
   GD.memBytes = null;
@@ -1386,18 +1416,30 @@ function wireGdb() {
   $("#gdb-next").onclick = () => gdbExec("next");
   $("#gdb-step").onclick = () => gdbExec("step");
   $("#gdb-finish").onclick = () => gdbExec("finish");
+  $("#gdb-interrupt").onclick = () => gdbExec("interrupt");
   $("#gdb-bp-add").onclick = async () => {
     const loc = $("#gdb-bp-input").value.trim();
     if (!loc) return;
+    $("#gdb-bp-input").value = "";
+    if (!GD.poll) {
+      // no live session yet — queue it; gdbStart replays pending breakpoints
+      // (standard debugger behavior: place breakpoints before launching)
+      GD.pendingBps.push(loc);
+      gdbRenderBreaks([]);
+      return;
+    }
     try {
       await gdbApi("break", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ loc }) });
-      $("#gdb-bp-input").value = "";
       gdbRefreshLists();
     } catch (e) { toast("gdb: " + e.message, "error"); }
   };
   $("#gdb-bp-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); $("#gdb-bp-add").click(); }
+  });
+  $("#gdb-set-btn").onclick = () => gdbSetExpr($("#gdb-set-input").value.trim());
+  $("#gdb-set-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("#gdb-set-btn").click(); }
   });
   $("#gdb-mem-read").onclick = async () => {
     const expr = $("#gdb-mem-expr").value.trim();
@@ -2359,7 +2401,7 @@ function renderUnpackApk(m) {
         const NL = String.fromCharCode(10);
         $("#unpack-preview").innerHTML =
           `<div class="dec-label">${esc(name)} — ${strs.length} strings <span class="spring"></span>
-             <button class="btn btn-xs" id="apk-copy-strs">⧉ ${esc(t("toast.copied"))}</button>
+             <button class="btn btn-xs" id="apk-copy-strs">⧉ ${esc(t("apk.copy_all"))}</button>
              <button class="btn btn-ghost btn-xs" id="apk-to-lab">⚗ ${esc(t("dec.send_str"))}</button></div>
            <div class="prev-path"><code>${esc(full)}</code></div>
            <div class="apk-strings">${strs.map((x) => esc(x)).join(NL)}</div>`;

@@ -550,9 +550,10 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     return self._error("no gdb session", 409)
                 action = str(body.get("action", ""))
                 mapping = {"run": sess.run, "continue": sess.continue_,
-                           "next": sess.next_, "step": sess.step_, "finish": sess.finish}
+                           "next": sess.next_, "step": sess.step_, "finish": sess.finish,
+                           "interrupt": sess.interrupt}
                 if action not in mapping:
-                    return self._error("action must be run|continue|next|step|finish")
+                    return self._error("action must be run|continue|next|step|finish|interrupt")
                 try:
                     res = mapping[action]()
                 except Exception as e:  # noqa: BLE001
@@ -575,6 +576,19 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     return self._error("no gdb session", 409)
                 try:
                     sess.delete_break(str(body.get("number", "")))
+                except Exception as e:  # noqa: BLE001
+                    return self._error(f"{type(e).__name__}: {e}", 500)
+                return self._json({"ok": True})
+
+            if path == "/api/gdb/set":
+                sess = state.gdb_session
+                if sess is None:
+                    return self._error("no gdb session", 409)
+                expr = str(body.get("expr", "")).strip()
+                if not expr:
+                    return self._error("expr required")
+                try:
+                    sess.cmd("-gdb-set " + expr)
                 except Exception as e:  # noqa: BLE001
                     return self._error(f"{type(e).__name__}: {e}", 500)
                 return self._json({"ok": True})

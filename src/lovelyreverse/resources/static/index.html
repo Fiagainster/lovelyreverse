@@ -173,6 +173,7 @@
               <button class="btn btn-xs" id="gdb-continue">▏▶ 继续</button>
               <button class="btn btn-xs" id="gdb-next">→ 跳过</button>
               <button class="btn btn-xs" id="gdb-step">↓ 进入</button>
+              <button class="btn btn-xs hidden" id="gdb-interrupt">⏸ 中断</button>
               <button class="btn btn-xs" id="gdb-finish">⤒ 出函数</button>
             </div>
             <div class="dec-label">调用栈</div>
@@ -181,6 +182,10 @@
           <div class="gdb-col">
             <div class="dec-label">寄存器</div>
             <div class="list gdb-list gdb-regs" id="gdb-regs"></div>
+            <div class="gdb-bp-row">
+              <input id="gdb-set-input" type="text" spellcheck="false" placeholder="写寄存器/表达式，如 $rax = 0" />
+              <button class="btn btn-xs" id="gdb-set-btn">写入</button>
+            </div>
           </div>
           <div class="gdb-col">
             <div class="dec-label">内存读取

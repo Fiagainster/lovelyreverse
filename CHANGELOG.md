@@ -2,6 +2,31 @@
 
 所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本遵循语义化。
 
+## [0.4.0] — 2026-11-13
+
+**动态调试上线**：gdb 桥打通 Windows（mingw gdb 17.2）与 Linux（WSL gdb 12.1）双侧，APK 静态分析落地。
+
+### 新增
+
+- **⚙ 动态调试页签**：会话启动（当前样本自动装载）/ 断点（*地址 或函数名，**会话前放置的断点进 pending 队列，启动自动补挂**）/ 运行·继续·单步·出函数·**中断**（fgets 阻塞等运行态可用）/ 写寄存器与表达式（`$rax = 0` 绕反调试）/ 全寄存器面板（PC 玫瑰高亮，点击复制）/ 调用栈 / 内存读取（$rsp、任意表达式，一键送解码实验室）/ gdb 控制台实时输出
+- **双传输**：`WSL · Linux ELF`（wsl.exe gdb 12.1）/ `Windows 本机`（mingw gdb 17.2），同一 MI 实现
+- **程序参数与 stdin 暂存**：fgets/scanf 类 crackme 的喂输入场景
+- **APK 静态分析**：zip 解包（遍历防护）落盘 `_lvr/unpacked_apk/`；**dex string pool 提取**（uleb128 + MUTF-8，纯 stdlib）——类名/URL/密钥一眼可见，一键复制/送解码实验室
+
+### 真题验证
+
+- **Linux（WSL）**：自编 ptrace 反调试 crackme —— 断点命中 → `$rax=0` 绕过 → strcmp@plt 偷 serial `345`，全链路 5.8s
+- **Windows**：challenge1.exe —— base64_encode 符号断点 → 寄存器取参 → 内存偷 XOR 缓冲（key 0x12 实测推导）→ ucrtbase!strcmp 偷硬编码密文 → 解出 flag（xor_base64_easy）
+- **APK**：合成样本 6 条目 + 2 dex，类名/C2 URL/密钥全数提取
+
+### 修复
+
+- GDB/MI 解析：const 停字符集缺 `=`/`{` 导致 `frame={...}` 列表炸掉；补 hex 转义解码
+- `^running` 是结果记录而非异步记录——mingw 同步模式下运行态迁移必须在此处
+- Windows gdb stdio 是 ANSI(GBK)：io_encoding 按传输选择（wsl=utf-8 / local=mbcs）；程序路径走 gdb argv（CreateProcessW 宽字符），MI stdin 传中文路径必炸；样本复制到 %TEMP% 会被 Defender 吞（ThreatID 2147958378 实录）
+- IFUNC 断点迁移：`break strcmp` 会被 gdb 挪进 libc 实现并在 glibc 初始化期误触——做题时应断 `*strcmp@plt`
+- WSL /tmp 在 VM 重启后清空——fixture 编译产物放持久目录
+
 ## [0.3.3] — 2026-11-12
 
 ### 新增

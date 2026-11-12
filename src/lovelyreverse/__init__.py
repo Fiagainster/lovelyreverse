@@ -4,4 +4,4 @@
 No AI inside — the tool doesn't think for you, it makes you think faster.
 """
 
-__version__ = "0.3.3"
+__version__ = "0.4.0"
