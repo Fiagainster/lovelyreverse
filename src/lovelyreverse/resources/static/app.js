@@ -574,6 +574,11 @@ async function loadProgram() {
   S.triage = tri;
   engineState("ready");
   $("#st-program").textContent = prog.name;
+  // resetWorkspace() installed the pre-open "open a binary first" hints;
+  // with a program loaded the center must say what to do NEXT instead
+  // (found while solving a keygenme: pane kept saying open-a-binary)
+  $("#code-decompile").innerHTML = `<div class="code-empty">${esc(t("code.empty.dec"))}</div>`;
+  $("#code-disasm").innerHTML = `<div class="code-empty">${esc(t("disasm.empty"))}</div>`;
   renderVerdict();
   renderProgramInfo();
   renderSections();
@@ -1867,6 +1872,11 @@ async function gotoInput() {
     const addr = v.startsWith("0x") ? parseInt(v, 16) : parseInt(v, 10);
     showDisasm(addr, true);
   } else {
+    // exact known function name → jump straight into its decompile
+    // (typing "FUN_08048f50" used to only filter the list, which read
+    // as "nothing happened" — caught while driving the keygenme solve)
+    const known = S.funcMap.get(v);
+    if (known != null) { selectFunction(known, v); return; }
     S.functionsQuery = v;
     $("#filter-functions").value = v;
     $$("#left-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "functions"));
@@ -1874,6 +1884,13 @@ async function gotoInput() {
     await loadFunctions(false);
     // B6: zero hits used to fail silently
     if (!S.functionsTotal) toast(t("goto.none", { q: v }), "info");
+    else if (S.functionsTotal === 1) {
+      // unambiguous filter hit → navigate there too (funcMap may not hold
+      // the name yet: rows load in pages, so read it off the row)
+      const row = $("#list-functions .row");
+      const nameEl = row && row.querySelector(".name");
+      if (row && nameEl) selectFunction(Number(row.dataset.addr), nameEl.textContent);
+    }
   }
 }
 
