@@ -723,6 +723,36 @@ class EngineManager:
 
         return self.submit(job, timeout=60)
 
+    def disasm_raw(self, addr: int, max_bytes: int = 2048) -> dict[str, Any]:
+        """Decode the raw byte stream at ``addr`` along the executed order.
+
+        Deliberately independent of Ghidra's instruction definitions: obfuscated
+        samples (overlapped instructions, CALL-chains that are really JMPs)
+        pollute the listing/decompiler because Ghidra must pick one alignment
+        per byte. The raw decode follows unconditional-JMP targets instead —
+        the same thing a human does when hand-reading the HEX view.
+        """
+        def job():
+            program = self._require_program()
+            mem = program.getMemory()
+            a = self._to_addr(addr)
+            block = mem.getBlock(a)
+            if block is None or not block.isInitialized():
+                raise EngineError(f"no initialized memory at 0x{addr:x}")
+            avail = int(block.getEnd().getOffset()) - addr + 1
+            n = max(0, min(int(max_bytes), avail, 1 << 16))
+            if n == 0:
+                raise EngineError(f"nothing readable at 0x{addr:x}")
+            raw = _read_bytes(mem, a, n)
+            bits = int(program.getMinAddress().getAddressSpace().getSize())
+            from lovelyreverse.disasm import decode_trace
+
+            out = decode_trace(raw, addr, mode_bits=bits)
+            out["block"] = str(block.getName())
+            return out
+
+        return self.submit(job, timeout=60)
+
     def _strings(self) -> list[dict[str, Any]]:
         if self._strings_cache is not None:
             return self._strings_cache

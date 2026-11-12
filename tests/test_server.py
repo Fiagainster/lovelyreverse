@@ -85,6 +85,11 @@ class StubEngine:
     def search_hex(self, pattern, limit=500):
         return [{"addr": 0x401234, "block": ".text", "function": "fun_1"}]
 
+    def disasm_raw(self, addr, max_bytes=2048):
+        return {"base": addr, "mode_bits": 32,
+                "items": [{"addr": addr, "size": 1, "bytes": "55", "text": "push ebp"}],
+                "stop": "ret", "recovered": 0, "block": ".text"}
+
     def constants_scan(self):
         return [{"name": "AES S-box", "category": "block-cipher", "note": "", "length": 16,
                  "addr": 0x409000, "block": ".rdata", "function": None}]
@@ -195,6 +200,18 @@ class TestStubbedApi:
         with pytest.raises(urllib.error.HTTPError) as e:
             get(server, "/api/program")
         assert e.value.code == 409
+
+    def test_disasm_raw(self, server):
+        _, data = get(server, "/api/disasm-raw?addr=0x401000")
+        assert data["base"] == 0x401000
+        assert data["items"][0]["text"] == "push ebp"
+        _, data = get(server, "/api/disasm-raw?addr=4198404")  # decimal form works too
+        assert data["base"] == 4198404
+
+    def test_disasm_raw_bad_addr(self, server):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            get(server, "/api/disasm-raw?addr=zzz")
+        assert e.value.code == 400
 
 
 class TestPureRoutes:

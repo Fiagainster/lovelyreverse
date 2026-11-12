@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "pyghidra>=3.0",
+    "capstone>=5.0",
 ]
 
 [project.optional-dependencies]

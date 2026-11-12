@@ -239,3 +239,27 @@
 |---|---|---|---|
 | 11 | 程序加载后中心空态还写「先打开一个二进制…」 | loadProgram 只调 resetWorkspace（装的是未打开文案），code.empty.dec 只存在于静态 HTML，被首次 wipe 冲掉后再没人恢复 | loadProgram 装完数据后把两个面板空态换成 code.empty.dec / disasm.empty |
 | 12 | 顶部跳转框输函数名回车"没反应" | 名字分支只过滤函数列表、不动中心区（实为按地址跳转才直接动） | 精确命中 funcMap 直接 selectFunction；过滤后唯一命中也自动选中进反编译 |
+
+## 裸反汇编功能：把手解码交给工具（2026-11-12，同日）
+
+上一节 KeygenMe 的「结论」当天就被推翻了——HEX 手解码虽然可靠，但要人脑模拟 CPU。既然路径规则是明确的（无条件 JMP 跟目标、CALL-实为-JMP 丢返回、垃圾字节是反调试），就该让工具代劳。新增 **⚡ 裸反汇编** 页签：
+
+**设计**（`src/lovelyreverse/disasm.py` 纯 capstone 模块，引擎只负责读内存字节）：
+
+- 线性扫描 + 显式流策略：无条件直接 JMP → 跟随目标（永不 fall-through）；条件跳转 → 走 fall-through（反调试的 JAE/JA 进垃圾由下面的恢复机制兜底）
+- **CALL-实为-JMP 签名**：callee 第一条是**向后**的直接 JMP → 视为混淆（真实 callee = `eb rel8` 回跳到 `ADD ESP,4` 丢返回簇）→ 跟进 callee，把压栈返回地址标记为「死返回」跳过；普通 CALL 走 fall-through
+- **垃圾恢复**：撞上 int3/ud2/不可解码 → 回退到最近一个条件跳转的目标继续（最多 16 次），恢复点标注 `↝`；KeygenMe 实测最终策略下 0 次恢复（死返回跳过已把垃圾全绕开），恢复机制是保险带
+- 终止：ret / end / trap / invalid / loop（自环）/ indirect / limit，页脚说明原因；visited 集防环
+
+**真样本验证**：从 entry 0x8048f50 一键还原 KeygenMe 全部 142 条真实执行路径（stop=ret）——3 处 RDTSC 反调试 gauntlet、7 处死返回、`imul` 主循环、`add/adc` 64 位累加全数命中，与手解结论（serial = Σ name[i]^(i+2) mod 2⁶⁴ → 10844645039911251）互相印证。Ghidra 反编译器的重叠指令污染被完全绕开，无需改引擎。
+
+**踩坑 #16**：第一版线性扫描把 CALL fall-through 一路解进故意垃圾（`in eax,dx` / `faddp` / `loopne`…），最后停在 (bad) 还错误恢复进 `ja` 的反调试垃圾目标——**识别 CALL-实为-JMP 是这类混淆的关键开关**，没有它线性扫描必然出轨；签名必须验「向后」JMP，普通 thunk（向前跳）不能误伤。
+
+**浏览器 E2E（后台实测全通过）**：页签解码 142 条 → 点击跳转目标重新解码 → HEX 框输完整 vaddr 直达 → HEX ⚡ 一键回裸反汇编 → 从垃圾地址 0x8048f5e 起步也能优雅走到 ret。
+
+顺手修的两个交互问题（E2E 中暴露）：
+
+| # | 问题 | 根因 | 修法 |
+|---|---|---|---|
+| 13 | HEX 跳转框输完整 vaddr 读越界报错（ram:10090f50） | 只检查当前块包含关系；Ghidra 内存块是碎片化的（segment_2.1 只有 276 字节 ELF 头，0x8048f50 属于 .text） | 在全部块中定位包含地址的块并自动切换，再转块内偏移 |
+| 14 | HEX 跳转框不支持回车 | 只绑了按钮 click | 补 Enter keydown，与裸反汇编地址框一致 |

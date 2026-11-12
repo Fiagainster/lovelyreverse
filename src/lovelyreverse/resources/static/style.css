@@ -472,6 +472,16 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--faint); }
 .hexbyte.zero { color: var(--faint); }
 .hexascii { color: var(--green); }
 
+/* ── raw disasm (obfuscation lifeline) ── */
+.raw-bytes { color: var(--faint); font-size: 11.5px; min-width: 20ch; }
+.raw-insn { color: var(--text); }
+.raw-insn.bad { color: var(--rose); }
+.raw-flow { color: var(--amber); width: 14px; flex-shrink: 0; text-align: center; }
+.raw-sep { color: var(--cyan); opacity: .85; }
+.raw-dead { color: var(--faint); font-style: italic; }
+.raw-target { cursor: pointer; }
+.raw-target:hover { color: var(--amber); text-decoration: underline; }
+
 /* hex toolbar */
 .hexbar select { max-width: 22ch; }
 #hex-info { margin-left: auto; }

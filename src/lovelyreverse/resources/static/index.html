@@ -84,6 +84,7 @@
       <button class="tab" data-tab="disasm" data-i18n="tab.disasm">⌗ disassembly</button>
       <button class="tab" data-tab="graph" data-i18n="tab.graph">◈ call graph</button>
       <button class="tab" data-tab="hex" data-i18n="tab.hex">⊞ memory hex</button>
+      <button class="tab" data-tab="raw" data-i18n="tab.raw">⚡ raw disasm</button>
       <span class="tab-spring"></span>
       <button class="tab mini" id="btn-decompile-all" data-i18n="decompile.all" data-i18n-title="decompile.all.title">↧ all functions → zip</button>
     </div>
@@ -134,9 +135,19 @@
           <input id="hex-offset" type="text" spellcheck="false" data-i18n-ph="hex.offset.ph" placeholder="offset" class="mini-input"/>
           <button class="btn btn-ghost btn-xs" id="hex-go" data-i18n="hex.go">read</button>
           <button class="btn btn-ghost btn-xs" id="hex-send" data-i18n-title="hex.send.title" title="send to decoder">⚗</button>
+          <button class="btn btn-ghost btn-xs" id="hex-disasm" data-i18n-title="hex.disasm.title" title="raw-disassemble from here">⚡</button>
           <span class="code-title" id="hex-info"></span>
         </div>
         <div class="code" id="code-hex"><div class="code-empty" data-i18n="hex.empty">pick a memory block and read it raw</div></div>
+      </div>
+
+      <div class="tabpane" data-pane="raw">
+        <div class="code-head">
+          <input id="raw-addr" type="text" spellcheck="false" class="mini-input" data-i18n-ph="raw.addr.ph" placeholder="0x08048f50" style="width:18ch"/>
+          <button class="btn btn-ghost btn-xs" id="raw-go" data-i18n="raw.go">decode</button>
+          <span class="code-title" id="raw-info"></span>
+        </div>
+        <div class="code" id="code-raw"><div class="code-empty" data-i18n="raw.empty">decode raw bytes along the executed path — survives overlapped instructions & jmp-calls that pollute the decompiler</div></div>
       </div>
     </div>
   </section>

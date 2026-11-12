@@ -335,6 +335,17 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                 data = state.engine.read_memory(q("block"), qi("offset", 0), qi("len", 4096))
                 return self._json({"data_b64": b64.b64encode(data).decode()})
 
+            # raw instruction-stream decode along the executed order (survives
+            # overlapped instructions / jmp-calls that pollute Ghidra's listing)
+            if path == "/api/disasm-raw":
+                v = q("addr").strip()
+                try:
+                    a = int(v, 16) if v.lower().startswith("0x") else int(v)
+                except ValueError:
+                    return self._error("bad addr (want 0x… or decimal)")
+                maxb = max(64, min(qi("max", 2048), 1 << 16))
+                return self._json(state.engine.disasm_raw(a, maxb))
+
             if path == "/api/search":
                 hits = state.engine.search_hex(q("hex"), qi("limit", 500))
                 return self._json({"items": hits})

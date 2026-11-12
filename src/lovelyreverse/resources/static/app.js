@@ -547,6 +547,10 @@ function resetWorkspace(statusMsg) {
   $("#overlay-info").innerHTML = "";
   $("#graph-info").textContent = t("graph.info.none");
   $("#graph-stats").textContent = "";
+  const rawBox = $("#code-raw");
+  if (rawBox) rawBox.innerHTML = `<div class="code-empty">${esc(t("raw.empty"))}</div>`;
+  const rawInfo = $("#raw-info");
+  if (rawInfo) rawInfo.textContent = "";
   G.rawNodes = new Map(); G.rawEdges = new Set();
   G.nodes = []; G.edges = []; G.byId = new Map();
   G.center = 0; G.selected = null; G.hover = null;
@@ -1072,11 +1076,14 @@ async function readHex() {
     const res = await api(`memory/read?block=${encodeURIComponent(S.hexBlock)}&offset=${S.hexOffset}&len=${S.hexChunk}`);
     const bytes = b64ToBytes(res.data_b64);
     S.hexBytes = bytes;   // F3: keep for "send to decoder"
-    $("#hex-info").textContent = `${S.hexBlock} @ +${S.hexOffset}`;
+    // true vaddr = block start + block-relative offset (labels used to show
+    // block-relative numbers, which read as wrong addresses)
+    S.hexBase = (S.blocks.find((b) => b.name === S.hexBlock) || {}).start || 0;
+    $("#hex-info").textContent = `${S.hexBlock} @ ${hexpad(S.hexBase + S.hexOffset)}`;
     let html = "";
     for (let i = 0; i < bytes.length; i += 16) {
       const chunk = bytes.slice(i, i + 16);
-      const addr = S.hexOffset + i;
+      const addr = S.hexBase + S.hexOffset + i;
       let hx = "", asc = "";
       for (const b of chunk) {
         hx += `<span class="hexbyte${b === 0 ? " zero" : ""}">${b.toString(16).padStart(2, "0")}</span> `;
@@ -1085,6 +1092,45 @@ async function readHex() {
       html += `<div class="hexgrid"><span class="hexaddr">${hexpad(addr)}</span>  ${hx} <span class="hexaddr">|</span>${asc}<span class="hexaddr">|</span></div>`;
     }
     box.innerHTML = html;
+  } catch (e) { box.innerHTML = `<div class="code-empty">${esc(e.message)}</div>`; }
+}
+
+/* ═══════════════════════ raw disasm (obfuscation lifeline) ═══════════════════════ */
+
+async function showRawDisasm(addr) {
+  if (!S.program || addr == null || Number.isNaN(addr)) return;
+  addr = Number(addr);
+  switchCenter("raw");
+  $("#raw-addr").value = "0x" + addr.toString(16);
+  const box = $("#code-raw");
+  box.innerHTML = `<div class="loading">${esc(t("dec.decompiling", { name: hexpad(addr) }))}</div>`;
+  try {
+    const res = await api(`disasm-raw?addr=${addr}`);
+    S.rawBase = res.base;
+    const STOP = { end: "raw.stop.end", ret: "raw.stop.ret", trap: "raw.stop.trap",
+                   invalid: "raw.stop.invalid", loop: "raw.stop.loop",
+                   indirect: "raw.stop.indirect", limit: "raw.stop.limit" };
+    let html = "";
+    for (const it of res.items) {
+      if (it.resume) {
+        html += `<div class="codeline raw-sep"><span class="ln">…</span>${esc(t("raw.resume", { addr: hexpad(it.addr) }))}</div>`;
+      } else if (it.dead) {
+        html += `<div class="codeline raw-dead"><span class="ln">·</span>${esc(t("raw.dead", { addr: hexpad(it.addr) }))}</div>`;
+      } else {
+        // make direct jump/call targets clickable — one click re-decodes there
+        const mm = it.text.match(/^(\S+\s+)(0x[0-9a-f]+)$/i);
+        const body = mm
+          ? `${esc(mm[1])}<span class="a raw-target" data-addr="${parseInt(mm[2], 16).toString(16)}">${esc(mm[2])}</span>`
+          : esc(it.text);
+        const flowMark = it.flow === "jmp" ? `<span class="raw-flow">↝</span>` : "";
+        html += `<div class="codeline"><span class="ln">${hexpad(it.addr)}</span>${flowMark}<span class="raw-bytes">${esc(it.bytes)}</span><span class="raw-insn${it.invalid ? " bad" : ""}">${body}</span></div>`;
+      }
+    }
+    if (STOP[res.stop]) html += `<div class="codeline raw-sep"><span class="ln">∎</span>${esc(t(STOP[res.stop]))}</div>`;
+    box.innerHTML = html;
+    const rec = res.recovered ? ` · ${t("raw.recovered", { n: res.recovered })}` : "";
+    $("#raw-info").textContent = `${res.block || ""} · ${res.items.length} insns${rec}`;
+    logLine(`raw disasm ${hexpad(res.base)}: ${res.items.length} insns, stop=${res.stop}`, "hi");
   } catch (e) { box.innerHTML = `<div class="code-empty">${esc(e.message)}</div>`; }
 }
 
@@ -2255,14 +2301,48 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#hex-go").onclick = () => {
     const v = $("#hex-offset").value.trim();
     if (!v) return;
-    S.hexOffset = v.startsWith("0x") ? parseInt(v, 16) : parseInt(v, 10) || 0;
+    let off = v.startsWith("0x") ? parseInt(v, 16) : parseInt(v, 10) || 0;
+    if (!Number.isFinite(off)) return;
+    // accept a full virtual address too — locate the containing block and
+    // switch to it (typing 0x8048e90 while on the ELF-header block used to
+    // read past the block and fail)
+    const hit = S.blocks.find(
+      (b) => Number(b.start) !== 0 && off >= Number(b.start) && off < Number(b.start) + Number(b.size),
+    );
+    if (hit) {
+      if (S.hexBlock !== hit.name) {
+        S.hexBlock = hit.name;
+        $("#hex-block").value = hit.name;
+      }
+      off -= Number(hit.start);
+    }
+    S.hexOffset = Math.max(0, off);
     readHex();
   };
+  $("#hex-offset").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#hex-go").onclick(); });
   $("#hex-send").onclick = () => {
     if (!S.hexBytes || !S.hexBytes.length) { toast(t("hex.empty"), "info"); return; }
     const hexText = [...S.hexBytes].map((b) => b.toString(16).padStart(2, "0")).join(" ");
     sendToDecoder(hexText, "hex");
   };
+  $("#hex-disasm").onclick = () => {
+    if (!S.hexBlock) return;
+    const blk = S.blocks.find((b) => b.name === S.hexBlock);
+    if (!blk) return;
+    showRawDisasm(Number(blk.start) + S.hexOffset);
+  };
+
+  // raw disasm
+  $("#raw-go").onclick = () => {
+    const v = $("#raw-addr").value.trim();
+    if (!v) return;
+    showRawDisasm(v.startsWith("0x") ? parseInt(v, 16) : parseInt(v, 10));
+  };
+  $("#raw-addr").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#raw-go").onclick(); });
+  $("#code-raw").addEventListener("click", (e) => {
+    const a = e.target.closest(".raw-target[data-addr]");
+    if (a) showRawDisasm(parseInt(a.dataset.addr, 16));
+  });
 
   // decoder lab
   $("#btn-op-add").onclick = () => {
