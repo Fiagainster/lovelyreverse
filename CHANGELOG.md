@@ -2,7 +2,7 @@
 
 所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本遵循语义化。
 
-## [未发布]
+## [0.3.3] — 2026-11-12
 
 ### 新增
 

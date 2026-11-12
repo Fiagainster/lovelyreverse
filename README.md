@@ -21,6 +21,7 @@
 
 打开一个二进制，Ghidra 引擎自动分析；然后在浏览器里以 IDE 三栏布局完成整个手搓流程：
 函数列表 → 伪代码 → 汇编 → 内存十六进制 → 交叉引用 → 调用图 → 解码实验室 → 解题。
+反编译被混淆打断时，⚡ 裸反汇编按真实执行流把原始字节直接解成人话。
 
 名字里的 ♥（lovely + reverse）就是这个项目的态度：逆向是手艺活，工具应该像一把顺手的刻刀，而不是一个代劳的黑盒。
 
@@ -98,12 +99,12 @@
 
 ## 适用题型
 
-**判断口诀：密文在文件里、算法看得懂 → 用它；答案在运行时 → 还得开 gdb。**
+**判断口诀：密文在文件里、算法看得懂 → 用它；反编译被混淆打断 → ⚡ 裸反汇编按执行流读；答案在运行时 → 还得开 gdb。**
 
 | 档位 | 题型 |
 |---|---|
 | **甜蜜区**——显著加速甚至半自动出 flag | 异或/编码链 crackme、标准算法识别（SM4/AES/MD5…）、PyInstaller 打包、简单前缀/查表比较、未知样本预处理（查壳/熵/overlay） |
-| **能用，工具当「看」的底座** | 逻辑模拟/迷宫、自定义 VM、花指令轻度混淆——反编译与锚点齐全，还原靠人 |
+| **能用，工具当「看」的底座** | 逻辑模拟/迷宫、自定义 VM、执行流混淆（重叠指令/CALL-实为-JMP——⚡ 裸反汇编可一键还原真实路径，KeygenMe 实测 142 条）、花指令轻度混淆——锚点与真实指令齐全，还原靠人 |
 | **不适合**——直接开别的工具 | 动态调试刚需（随机密钥/反调试）、溢出利用、魔改壳脱壳、反编译对抗 |
 
 完整分析（强项短板、竞争格局、工程健康度、投入排序）见 [docs/evaluation.md](docs/evaluation.md)。
@@ -124,7 +125,7 @@
 到 [Releases](https://github.com/Fiagainster/lovelyreverse/releases) 下载最新的 `.whl`，然后：
 
 ```bash
-pip install lovelyreverse-0.3.2-py3-none-any.whl
+pip install lovelyreverse-0.3.3-py3-none-any.whl
 lvr serve
 ```
 
@@ -136,7 +137,7 @@ cd lovelyreverse
 pip install -e .
 ```
 
-> 依赖极简：除 `pyghidra` 外**零第三方依赖**——HTTP 服务是 stdlib 手写的，前端是原生 JS，离线可用。
+> 依赖极简：只有 `pyghidra`（Ghidra 桥）和 `capstone`（裸反汇编的指令解码）两个第三方依赖——HTTP 服务是 stdlib 手写的，前端是原生 JS，离线可用。
 > PyPI 发布准备中（`pip install lovelyreverse`）。
 
 ### 启动
@@ -176,7 +177,7 @@ lvr doctor
 
 `lvr serve` 启动时也会做同样的事：Ghidra 路径不合法、Java 缺失或低于 21 都会在启动阶段直接报错并给出修复指引，而不是等到第一次打开二进制才炸。
 
-> 依赖极简：除 `pyghidra` 外**零第三方依赖**——HTTP 服务是 stdlib 手写的，前端是原生 JS，离线可用。
+> 依赖极简：只有 `pyghidra`（Ghidra 桥）和 `capstone`（裸反汇编的指令解码）两个第三方依赖——HTTP 服务是 stdlib 手写的，前端是原生 JS，离线可用。
 
 ## 典型 CTF 工作流
 
