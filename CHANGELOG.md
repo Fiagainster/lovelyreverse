@@ -2,7 +2,7 @@
 
 所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本遵循语义化。
 
-## [Unreleased]
+## [0.4.1] — 2026-11-14
 
 真题打磨（Root-Me KeygenMe by int_0x80 全程工具化做题暴露的短板）。
 
