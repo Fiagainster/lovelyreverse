@@ -20,7 +20,7 @@
 ## 这是什么
 
 打开一个二进制，Ghidra 引擎自动分析；然后在浏览器里以 IDE 三栏布局完成整个手搓流程：
-函数列表 → 伪代码 → 汇编 → 内存十六进制 → 交叉引用 → 调用图 → 解码实验室 → 解题。
+函数列表 → 伪代码 → 汇编 → 内存十六进制 → 交叉引用 → 调用图 → 解码实验室 → ⚙ 动态调试 → 解题。
 反编译被混淆打断时，⚡ 裸反汇编按真实执行流把原始字节直接解成人话。
 
 名字里的 ♥（lovely + reverse）就是这个项目的态度：逆向是手艺活，工具应该像一把顺手的刻刀，而不是一个代劳的黑盒。
@@ -49,9 +49,9 @@
 ### CTF 特化（本工具的存在意义）
 
 - **做题链联动**（照着真实解题流程做：查壳 → 字符串锚点 → 交叉引用 → 反编译）：查壳结论面板给出方向（干净 / 疑似加壳 + 下一步提示）；字符串单击看「谁在用它」，双击跳进反编译的**精确引用行**；导入点击直达调用者。**全站右键菜单**（10 类对象：反编译符号 / 选中内容 / xref 行 / 常量行 / 函数行 / 字符串 / 导入 / 导出 / 搜索结果 / 汇编行）——跳转、查引用、反汇编、跟随跳转、送解码、重命名、备注、复制，全是快捷入口。字符串和代码不再是两个孤岛。
-- **加密常量识别**（FindCrypt 精髓）：内置 40+ 签名——AES S-box/Te0、SM4 S-box/FK、SM3 IV、MD5/SHA-1/SHA-256/SHA-512 IV 与 K 表、Blowfish P 数组、Camellia σ、TEA/XTEA δ、ChaCha σ、Base64/32/Uuencode 字母表、CRC 表、ECC 域素数（程序化生成，零抄写错误）。自动展开大小端双变体，命中自动归属到函数。打开一个带 AES 的 crackme，`.rdata` 里的 S-box 直接标出来。
+- **加密常量识别**（FindCrypt 精髓）：内置 55 个签名——AES S-box/Te0、SM4 S-box/FK、SM3 IV、MD5/SHA-1/SHA-256/SHA-512 IV 与 K 表、Blowfish P 数组、Camellia σ、TEA/XTEA δ、ChaCha σ、Base64/32/Uuencode 字母表、CRC 表、ECC 域素数（程序化生成，零抄写错误）。自动展开大小端双变体，命中自动归属到函数。打开一个带 AES 的 crackme，`.rdata` 里的 S-box 直接标出来。
 - **统一搜索**（底部 ⌕ 搜索页签）：一个输入框同时搜**字符串、函数名**，粘贴偶数位 hex 自动追加**内存字节**搜索；点字符串命中直达交叉引用，点函数命中直接反编译，清空输入框即还原空态。
-- **解码实验室**（CyberChef 精髓）：28 种操作**链式**叠加（hex/base64/base32/ascii85/URL/ROT-n/ROT47/XOR/RC4/位反转/C 转义/gzip/zlib/raw inflate/MD5/SHA-1/SHA-256…），输入支持 text/hex/b64 三种模式；**一键预设**（Base64 / Hex / ROT13 / 字节反转 / XOR 爆破）+ 操作中文标签 + 空链使用指引，打开就知道怎么用。
+- **解码实验室**（CyberChef 精髓）：30 种操作**链式**叠加（hex/base64/base32/ascii85/URL/ROT-n/ROT47/XOR/XOR 定位/RC4/位反转/C 转义/gzip/zlib/raw inflate/hexdump/MD5/SHA-1/SHA-256…），输入支持 text/hex/b64 三种模式；**一键预设**（Base64 / Hex / ROT13 / 字节反转 / XOR 爆破）+ 操作中文标签 + 空链使用指引，打开就知道怎么用。
 - **XOR 工具箱**：
   - 单字节爆破 + 可打印评分排序（`⛨ xor brute`）
   - **已知明文推密钥**（`⛭ derive key`）：输入 `flag{` 前缀，直接算出循环 XOR 密钥（含周期一致性检查）
@@ -94,6 +94,9 @@
 - 学习笔记中的 `ez_debug` 密文，解码链 `[xor ATRI] → [xor 17]` 直接解出 `flag{y0u_ar3_g0od_@_Debu9}`
 - gcc 编译的 crypto_demo 常量扫描 **5/5 命中、零误报**，TEA δ 正确归属 `tea_encrypt`（引擎测试固化）
 - 题库 `pyre.exe`（PyInstaller 打包题）：overlay 自动识别，解包 **60 个条目 · PYZ 133 模块**，入口脚本 `1.pyc` pyc magic 修复后可直接预览；MZ/ELF 条目（如 `VCRUNTIME140.dll`）一键送 Ghidra
+- 动态调试（v0.4.0）：WSL 自编 ptrace 反调试 crackme——断点命中 → `$rax=0` 绕过 → `strcmp@plt` 偷 serial，全链路 5.8s；Windows `challenge1.exe`——内存偷 XOR 缓冲（key 0x12 实测推导）+ `ucrtbase!strcmp` 偷硬编码密文 → 解出 flag
+- APK 静态分析（v0.4.0）：合成样本 6 条目 + 2 dex，类名/C2 URL/密钥全数提取
+- Root-Me KeygenMe（v0.4.1 真题打磨）：strip + 重叠指令混淆 + RDTSC 反调试×3——静态 ⚡ 裸反汇编三段接力还原 imul 主循环推算法，动态 gdb 断点偷参/寄存器对拍，serial 实测 GG 通过
 
 <p align="center">
   <img src="docs/screenshots/unpack.png" width="72%" alt="PyInstaller unpack modal">
@@ -101,13 +104,13 @@
 
 ## 适用题型
 
-**判断口诀：密文在文件里、算法看得懂 → 用它；反编译被混淆打断 → ⚡ 裸反汇编按执行流读；答案在运行时 → 还得开 gdb。**
+**判断口诀：密文在文件里、算法看得懂 → 静态做题链；反编译被混淆打断 → ⚡ 裸反汇编按执行流读；答案在运行时 → ⚙ 动态调试（断点偷参/写寄存器绕反调试，同一页面闭环）。**
 
 | 档位 | 题型 |
 |---|---|
-| **甜蜜区**——显著加速甚至半自动出 flag | 异或/编码链 crackme、标准算法识别（SM4/AES/MD5…）、PyInstaller 打包、简单前缀/查表比较、未知样本预处理（查壳/熵/overlay） |
+| **甜蜜区**——显著加速甚至半自动出 flag | 异或/编码链 crackme、标准算法识别（SM4/AES/MD5…）、PyInstaller 打包、简单前缀/查表比较、未知样本预处理（查壳/熵/overlay）、**运行时才出答案的反调试 crackme**（⚙ 动态调试闭环：断点偷参 → `$rax=0` 绕过 → 内存偷密文，Random Crackme 实测） |
 | **能用，工具当「看」的底座** | 逻辑模拟/迷宫、自定义 VM、执行流混淆（重叠指令/CALL-实为-JMP——⚡ 裸反汇编可一键还原真实路径，KeygenMe 实测 142 条）、花指令轻度混淆——锚点与真实指令齐全，还原靠人 |
-| **不适合**——直接开别的工具 | 动态调试刚需（随机密钥/反调试）、溢出利用、魔改壳脱壳、反编译对抗 |
+| **不适合**——直接开别的工具 | 溢出/利用（要 debugger+fuzz 全家桶）、魔改壳脱壳、反编译对抗（混淆 pyc/VMP） |
 
 完整分析（强项短板、竞争格局、工程健康度、投入排序）见 [docs/evaluation.md](docs/evaluation.md)。
 
@@ -127,7 +130,7 @@
 到 [Releases](https://github.com/Fiagainster/lovelyreverse/releases) 下载最新的 `.whl`，然后：
 
 ```bash
-pip install lovelyreverse-0.3.3-py3-none-any.whl
+pip install lovelyreverse-0.4.1-py3-none-any.whl
 lvr serve
 ```
 
@@ -204,7 +207,7 @@ flag 到手
 
 - **EngineManager**（`src/lovelyreverse/engine/manager.py`）：JVM 所有权 + 单 worker 线程串行化所有 Ghidra 调用；Ghidra 工程建在**样本同级的 `_lvr/` 目录**（`<样本目录>/_lvr/<程序名>.gpr`，二次打开秒级复用分析结果），目录不可写或设置 `LVR_PROJECT_DIR` 时回退到 `~/.lovelyreverse/projects`
 - **零依赖 HTTP 层**（`server/app.py`）：正则路由 + 任务农场（打开/批量反编译为后台 job，前端轮询）+ 带耗时的请求日志
-- **纯逻辑层**（`util/`）：`decode.py`（28 ops）、`xor.py`（爆破/推钥）、`binfile.py`（PE/ELF/熵/overlay，无任何依赖）
+- **纯逻辑层**（`util/`）：`decode.py`（30 ops）、`xor.py`（爆破/推钥）、`binfile.py`（PE/ELF/熵/overlay，无任何依赖）
 - **签名库**（`engine/constants.py`）：声明式签名表，DWORD 类自动生成 BE/LE 变体
 
 ## 测试
@@ -226,7 +229,7 @@ CI（GitHub Actions，ubuntu + windows × Python 3.11/3.13）跑 `-m "not engine
 ```bash
 pip install build
 python -m build          # → dist/*.whl + dist/*.tar.gz
-gh release create v0.1.0 dist/* --title "v0.1.0" --notes "..."
+gh release create v0.4.1 dist/* --title "v0.4.1" --notes "..."
 ```
 
 ## 路线图
@@ -234,7 +237,8 @@ gh release create v0.1.0 dist/* --title "v0.1.0" --notes "..."
 - [ ] Linux/macOS 系统性支持
 - [ ] 结构体/数据类型编辑，Union 面板
 - [ ] Pattern Language（参考 ImHex）声明式解析数据
-- [ ] gdb / x64dbg 桥接（动态调试面板）
+- [x] gdb 桥接（动态调试面板，v0.4.0；v0.4.1 补指令级单步 + 环境变量注入）
+- [ ] x64dbg 桥接
 - [x] PyInstaller 一键解包（pyinstxtractor 内置化）
 - [ ] pycdc 集成（.pyc 反编译回源码）
 - [ ] 常量扫描：短签名（<8B）命中标弱，减少巧合误报

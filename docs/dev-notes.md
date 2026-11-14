@@ -1,6 +1,6 @@
 # 开发笔记 & 续作指南（内部文档）
 
-> 状态快照 2026-11-11（**v0.3.1 已发布**：v0.3.0 做题链 + 右键菜单 v2 + `_lvr/` 工程之上，再打包发布后 6 项实测 UX 修复；GitHub Release 带 whl+tar.gz）。给下一次继续开发的人（或下一个会话）看的。
+> 状态快照 2026-11-14（**v0.4.1 已发布**：v0.3.1 之上，v0.3.2 通宵实测 10 项 UX 修复 → v0.3.3 ⚡裸反汇编 → v0.4.0 ⚙动态调试 gdb 桥（Windows+Linux）+ APK 静态分析 → v0.4.1 KeygenMe 真题打磨（裸反汇编向后余量、指令级单步、gdb env 注入、运行态快速失败、CLI UTF-8）；GitHub Release 带 whl+tar.gz）。给下一次继续开发的人（或下一个会话）看的。
 
 ## 当前进度
 
@@ -15,8 +15,11 @@
 | PyInstaller 一键解包（inspector 入口） | ✅ 完成，pyre.exe 实测 |
 | 加密常量扫描 | ✅ 真实二进制验证（SM4/TEA/AES/Base64/CRC 均命中）；弱签名问题见已知问题 #2 |
 | `lvr doctor` + 部署自检（Ghidra/Java 探测、fail-fast） | ✅ 完成，12 个 CLI 单测 |
-| 测试 | ✅ 125 个（118 不需要 Ghidra + 7 个引擎集成），全量 72.85s |
+| 测试 | ✅ 182 个（175 不需要 Ghidra + 7 个引擎集成，有 GHIDRA_INSTALL_DIR 时跑） |
 | CI workflow | ✅ 写好 |
+| ⚡ 裸反汇编（capstone 执行流解码，混淆兜底） | ✅ 完成（v0.3.3）：JMP 跟随 / CALL-实为-JMP 死返回 / 垃圾恢复；v0.4.1 补读取窗口向前 512B 余量；KeygenMe 142 条实测 |
+| ⚙ 动态调试 gdb 桥（WSL Linux / Windows 本机双传输） | ✅ 完成（v0.4.0）：断点 pending 队列、行级/指令级单步、写寄存器、内存偷取、中断；v0.4.1 补 env 注入与运行态快速失败；Random Crackme / challenge1 / KeygenMe 实测 |
+| APK 静态分析（zip 解包 + dex string pool） | ✅ 完成（v0.4.0） |
 | README | ✅ 完成（五张截图已用 v0.3.0 界面重拍，browser-use 后台直存 `docs/screenshots/`） |
 | UX 批量修复（v0.3.0 发布后 6 项实测反馈） | ✅ 完成，E2E 23 项全绿（打开残留/卡顿、xref 卡片置顶、解码预设+统一搜索、解包链、上传语义） |
 
@@ -124,11 +127,11 @@
 
 ## 续作清单（Roadmap 对应的实现提示）
 
-- **v0.3.1+ 候选**：弱签名标记（已知问题 #1）、xref 面板过滤 0x2e 之类垃圾地址行——v0.3.0 发版时留下的两个顺手活。
+- **仍待做的顺手活**（v0.3.0 留下，至今未做）：弱签名标记（已知问题 #1）、xref 面板过滤 0x2e 之类垃圾地址行。
 - **Linux/macOS**：`config.py` 已平台无关（hint 目录按平台分支），主要工作是实际跑一遍 + 文档。
 - **pycdc 集成**：pyc 反编译仍是缺口，解包出 .pyc 后目前只能靠 dis。可考虑捆绑/调用 pycdc。
 - **Pattern Language**：`.reference/ImHex` 有完整 DSL 实现；第一步可以只做「结构体声明 → 结构化视图」。
-- **gdb 桥**：Windows 优先方案是 gdbserver（WSL/远程）+ MI 协议 over stdlib；先做「断点/单步/读寄存器/读内存」四件事。
+- ~~**gdb 桥**~~：✅ v0.4.0 已落地（断点/单步/读寄存器/读内存之外还加了写寄存器、中断、调用栈、env 注入；v0.4.1 补指令级单步）。下一步增量：patch（NOP/改字节）、条件断点、x64dbg 桥。
 - **签名库扩充**：`.reference/yara4ida` 的 SIGS 目录有最全的 crypto/hash/压缩签名集，可写转换脚本导入。
 - ~~**Ghidra 数据库复用**~~：已实现（v0.3.0）——`.rep` 工程与样本路径一一映射（样本同级 `_lvr/`），二次打开秒级。可再做的：工程清单页（跨样本浏览 `_lvr/`）、打开旧样本时提示「检测到已有分析工程」。
 
