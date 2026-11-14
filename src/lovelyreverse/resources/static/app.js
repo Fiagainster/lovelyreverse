@@ -392,6 +392,7 @@ const S = {
   hexOffset: 0,
   hexChunk: 4096,
   hexBytes: null,          // last-read chunk (F3: send to decoder)
+  decOutBytes: null,       // last decoder-lab output (encoding switch re-render)
   selectedString: null,
   ops: [],
 };
@@ -449,6 +450,7 @@ async function openByPath(path) {
     });
     logLine(t("log.analysis_done"), "ok");
     await loadProgram();
+    gdbHintIfStaleTarget(path);
   } catch (e) {
     toast(t("toast.open_fail", { err: e.message }), "error");
     logLine(`open failed: ${e.message}`, "err");
@@ -574,6 +576,10 @@ async function loadProgram() {
   const prog = await api("program");
   const tri = await api("triage");
   resetWorkspace();
+  // a filter left over from the previous program hides every function of the
+  // new one as "无匹配项" (found while switching ch12 → ch13 during a solve)
+  $("#filter-functions").value = "";
+  $("#filter-strings").value = "";
   S.program = prog;
   S.triage = tri;
   engineState("ready");
@@ -952,7 +958,7 @@ function renderSections() {
     const szText = Number.isFinite(sz) && sz >= 0 ? sz.toLocaleString() : "—";
     const offText = off != null && Number.isFinite(Number(off)) ? hexa(Number(off)) : "—";
     return `<div class="sec-row">
-      <div class="sec-line1"><span class="sec-name">${esc(s.name)}</span><span class="sec-ent">H=${ent}${packed}</span></div>
+      <div class="sec-line1"><span class="sec-name">${esc(s.name || ("#" + s.index))}</span><span class="sec-ent">H=${ent}${packed}</span></div>
       <div class="sec-bar"><i style="width:${w}%"></i></div>
       <div class="sec-meta">${szText} B @ ${offText}</div>
     </div>`;
@@ -1338,6 +1344,10 @@ async function gdbPoll() {
   } else if (st.running) {
     $("#gdb-regs").innerHTML = `<div class="insp-empty">${esc(t("gdb.running_hint"))}</div>`;
     $("#gdb-stack").innerHTML = "";
+  } else if (st.exited) {
+    // the console keeps streaming after exit (program stdout flushes at exit) —
+    // without this the UI shows the stale pre-run view forever
+    await gdbRefreshLists();
   }
 }
 
@@ -1345,6 +1355,26 @@ async function gdbEnsurePolling() {
   if (GD.poll) return;
   GD.poll = setInterval(gdbPoll, 1200);
   await gdbPoll();
+}
+
+async function gdbHintIfStaleTarget(newPath) {
+  /* After switching samples, an alive gdb session still targets the OLD file
+     (it survived the switch; the start button stays hidden while it lives).
+     Surface that: re-show 启动会话 (the backend now auto-restarts onto the
+     new program) and say so — clicking start used to fail with a silent
+     "already active" error and the console kept showing the old sample. */
+  try {
+    const res = await fetch("/api/gdb/state");
+    const st = await res.json();
+    const prog = st.active && st.status && st.status.program;
+    if (!prog) return;
+    const norm = (p) => String(p).replace(/[\\/]+/g, "\\").toLowerCase();
+    if (norm(prog) === norm(newPath || "")) return;
+    const oldName = prog.split(/[\\/]/).pop();
+    $("#gdb-start").classList.remove("hidden");
+    logLine(t("gdb.stale_target", { old: oldName }), "hi");
+    toast(t("gdb.stale_target", { old: oldName }), "info", 6000);
+  } catch { /* gdb info unavailable — not fatal */ }
 }
 
 async function gdbStart() {
@@ -1421,6 +1451,19 @@ function wireGdb() {
   $("#gdb-stepi").onclick = () => gdbExec("stepi");
   $("#gdb-finish").onclick = () => gdbExec("finish");
   $("#gdb-interrupt").onclick = () => gdbExec("interrupt");
+  $("#gdb-cmd-send").onclick = async () => {
+    const cmd = $("#gdb-cmd").value.trim();
+    if (!cmd) return;
+    try {
+      await gdbApi("exec", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "console", cmd }) });
+      $("#gdb-cmd").value = "";
+      await gdbPoll();
+    } catch (e) { toast("gdb: " + e.message, "error"); }
+  };
+  $("#gdb-cmd").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("#gdb-cmd-send").click(); }
+  });
   $("#gdb-bp-add").onclick = async () => {
     const loc = $("#gdb-bp-input").value.trim();
     if (!loc) return;
@@ -1581,6 +1624,7 @@ async function runChain() {
 }
 
 function renderDecOutput(bytes) {
+  S.decOutBytes = bytes;   // kept so switching the text encoding re-renders
   const showHex = $("#dec-show-hex").checked;
   const ta = $("#dec-output");
   if (showHex) {
@@ -1593,7 +1637,18 @@ function renderDecOutput(bytes) {
     }
     ta.value = s;
   } else {
-    ta.value = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    // utf-8 replaces invalid bytes with U+FFFD — fine for real text, lossy
+    // for ciphertext; latin-1 maps every byte 1:1, gbk serves 中文 samples
+    const enc = $("#dec-enc").value;
+    if (enc === "latin1") {
+      let s = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      ta.value = s;
+    } else {
+      ta.value = new TextDecoder(enc, { fatal: false }).decode(bytes);
+    }
   }
 }
 
@@ -2682,15 +2737,64 @@ window.addEventListener("DOMContentLoaded", async () => {
         $("#hex-block").value = hit.name;
       }
       off -= Number(hit.start);
+    } else {
+      // address inside no block: small numbers are block-relative offsets
+      // (keep that), but address-sized values used to be sent raw and got
+      // added to the current block's base — a doubled address and a baffling
+      // "Unable to read bytes" error.  Show the mapped ranges instead.
+      const starts = S.blocks.map((b) => Number(b.start)).filter((x) => x > 0);
+      const minStart = starts.length ? Math.min(...starts) : 0;
+      if (off >= minStart) {
+        const ranges = S.blocks.map((b) => `${b.name} 0x${Number(b.start).toString(16)}–0x${(Number(b.start) + Number(b.size)).toString(16)}`).join(", ");
+        toast(t("hex.unmapped", { addr: off.toString(16), ranges }), "error", 6000);
+        return;
+      }
     }
     S.hexOffset = Math.max(0, off);
     readHex();
   };
-  $("#hex-offset").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#hex-go").onclick(); });
-  $("#hex-send").onclick = () => {
+  $("#hex-copy").onclick = () => {
     if (!S.hexBytes || !S.hexBytes.length) { toast(t("hex.empty"), "info"); return; }
-    const hexText = [...S.hexBytes].map((b) => b.toString(16).padStart(2, "0")).join(" ");
-    sendToDecoder(hexText, "hex");
+    const blk = S.blocks.find((b) => b.name === S.hexBlock);
+    const base = (blk ? Number(blk.start) : 0) + S.hexOffset;
+    let s = "";
+    for (let i = 0; i < S.hexBytes.length; i += 16) {
+      const chunk = S.hexBytes.slice(i, i + 16);
+      const hx = [...chunk].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+      const asc = [...chunk].map((b) => (b >= 0x20 && b < 0x7f) ? String.fromCharCode(b) : ".").join("");
+      s += "0x" + (base + i).toString(16).padStart(8, "0") + "  " + hx.padEnd(48) + " |" + asc + "|\n";
+    }
+    navigator.clipboard.writeText(s).then(() => toast(t("toast.copied"), "ok", 1800))
+      .catch((err) => toast("clipboard: " + err.message, "error", 3000));
+  };
+  $("#hex-offset").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#hex-go").onclick(); });
+  $("#hex-send").onclick = async (e) => {
+    if (!S.hexBytes || !S.hexBytes.length) { toast(t("hex.empty"), "info"); return; }
+    if (!e.shiftKey) {
+      const hexText = [...S.hexBytes].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+      sendToDecoder(hexText, "hex");
+      return;
+    }
+    // Shift-click: the lab used to receive only the current 4096B page —
+    // big regions (VM memories, string tables) needed manual page-flipping.
+    // Pull up to 8 pages (32 KB) from the current offset and send them all.
+    try {
+      setBusy(true, "hex");
+      let all = [...S.hexBytes];
+      let off = S.hexOffset + S.hexBytes.length;
+      for (let k = 0; k < 7 && S.hexBytes.length === S.hexChunk; k++) {
+        const res = await api(`memory/read?block=${encodeURIComponent(S.hexBlock)}&offset=${off}&len=${S.hexChunk}`);
+        const more = b64ToBytes(res.data_b64);
+        if (!more.length) break;
+        all.push(...more);
+        off += more.length;
+        if (more.length < S.hexChunk) break;
+      }
+      const hexText = all.map((b) => b.toString(16).padStart(2, "0")).join(" ");
+      sendToDecoder(hexText, "hex");
+      toast(t("hex.sent.pages", { n: all.length }), "ok", 2500);
+    } catch (err) { toast(err.message, "error"); }
+    finally { setBusy(false); }
   };
   $("#hex-disasm").onclick = () => {
     if (!S.hexBlock) return;
@@ -2723,6 +2827,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#dec-show-hex").onchange = () => {
     const out = $("#dec-output").value;
     if (out) runChain();
+  };
+  $("#dec-enc").onchange = () => {
+    if (S.decOutBytes && S.decOutBytes.length) renderDecOutput(S.decOutBytes);
   };
   $("#btn-dec-copy").onclick = () => {
     navigator.clipboard.writeText($("#dec-output").value).then(() => toast(t("toast.copied"), "ok", 1500));

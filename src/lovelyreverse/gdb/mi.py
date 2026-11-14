@@ -34,35 +34,65 @@ class MiParseError(ValueError):
     pass
 
 
-def _unescape_c(body: str) -> str:
+def _unescape_c(body: str, encoding: str = "utf-8") -> str:
     """Decode the inside of an MI c-string.
 
-    gdb escapes '\\\\' and '"' and emits \\n / \\t / \\xHH for non-printables.
+    gdb escapes '\\\\' and '"' and emits \\n / \\t / \\xHH / \\NNN(octal) for
+    non-printables.  Non-ASCII text (中文 paths) arrives as a run of BYTE
+    escapes; turning each escape into its own Unicode char shreds UTF-8
+    sequences into mojibake, so escapes are collected at byte level and the
+    whole payload is decoded once at the end (`encoding` = the transport's
+    io_encoding: utf-8 for wsl gdb, mbcs for mingw gdb).
+
+    Octal form matters: Linux gdb escapes high bytes as \\NNN (e.g.
+    "\\344\\270\\264" for 临), and \\0 is a prefix of \\012 — handled by
+    consuming up to three octal digits.
+
+    `body` is expected to be a latin-1 view of the raw MI line (the reader
+    decodes byte-transparently): gdb MIXES raw high bytes with \\xHH/\\NNN
+    escapes in one string (observed: 临 raw, the next char as E6 + "\\227" +
+    B6), so raw chars join the byte buffer via ord() — no double encoding —
+    and everything is decoded once at the end.
     """
-    out = []
+    out = bytearray()
     i = 0
-    while i < len(body):
+    n = len(body)
+    while i < n:
         c = body[i]
-        if c == "\\" and i + 1 < len(body):
+        o = ord(c)
+        if c == "\\" and i + 1 < n:
             nxt = body[i + 1]
-            if nxt == "x" and i + 3 < len(body):
+            if nxt == "x":
                 hexpart = body[i + 2 : i + 4]
                 try:
-                    out.append(chr(int(hexpart, 16)))
+                    out.append(int(hexpart, 16))
                     i += 4
                     continue
                 except ValueError:
                     pass
-            mapping = {"n": "\n", "r": "\r", "t": "\t", "e": "\x1b", "0": "\0"}
-            out.append(mapping.get(nxt, nxt))
+            if nxt in "01234567":
+                # \NNN — 1..3 octal digits
+                j = i + 1
+                val = 0
+                while j < n and j - i <= 3 and body[j] in "01234567":
+                    val = val * 8 + int(body[j], 8)
+                    j += 1
+                out.append(val & 0xFF)
+                i = j
+                continue
+            mapping = {"n": "\n", "r": "\r", "t": "\t", "e": "\x1b"}
+            out.extend((mapping.get(nxt, nxt)).encode("latin-1", "replace"))
             i += 2
             continue
-        out.append(c)
+        if o <= 0xFF:
+            out.append(o)          # latin-1 view of a raw byte
+        else:                      # already-decoded text (e.g. tests, callers
+            out.extend(c.encode(encoding, "replace"))  # passing real unicode)
         i += 1
-    return "".join(out)
+    return out.decode(encoding, "replace")
 
 
-def _read_string(s: str, i: int) -> tuple[str, int]:
+def _read_string(s: str, i: int, encoding: str = "utf-8") -> tuple[str, int]:
     if i >= len(s) or s[i] != '"':
         raise MiParseError(f"expected '\"' at {i}: {s!r}")
     out = []
@@ -74,13 +104,13 @@ def _read_string(s: str, i: int) -> tuple[str, int]:
             i += 2
             continue
         if c == '"':
-            return _unescape_c("".join(out)), i + 1
+            return _unescape_c("".join(out), encoding), i + 1
         out.append(c)
         i += 1
     raise MiParseError(f"unterminated string: {s!r}")
 
 
-def _read_value(s: str, i: int) -> tuple[Any, int]:
+def _read_value(s: str, i: int, encoding: str = "utf-8") -> tuple[Any, int]:
     """Parse one MI value starting at s[i]; returns (value, next_index)."""
     if i >= len(s):
         raise MiParseError("unexpected end of value")
@@ -100,7 +130,7 @@ def _read_value(s: str, i: int) -> tuple[Any, int]:
                 # "{value,...}" — unnamed tuple degrades to a list
                 items = []
                 while True:
-                    v, i2 = _read_value(s, i)
+                    v, i2 = _read_value(s, i, encoding)
                     items.append(v)
                     i = i2
                     if i < len(s) and s[i] == ",":
@@ -112,7 +142,7 @@ def _read_value(s: str, i: int) -> tuple[Any, int]:
             var = s[i:j]
             if j >= len(s) or s[j] != "=":
                 raise MiParseError(f"expected '=' after {var!r} at {j}")
-            v, i = _read_value(s, j + 1)
+            v, i = _read_value(s, j + 1, encoding)
             result[var] = v
             if i < len(s) and s[i] == ",":
                 i += 1
@@ -129,10 +159,10 @@ def _read_value(s: str, i: int) -> tuple[Any, int]:
             # list of results: "name=value" vs plain values — peek for '='
             # after an identifier; gdb disambiguates by content, we parse
             # greedily: try result form, fall back to plain value.
-            v, i2 = _read_value(s, i)
+            v, i2 = _read_value(s, i, encoding)
             if isinstance(v, str) and i2 < len(s) and s[i2] == "=":
                 # looks like "var=value" inside a list
-                v2, i3 = _read_value(s, i2 + 1)
+                v2, i3 = _read_value(s, i2 + 1, encoding)
                 items.append({v: v2})
                 i = i3
             else:
@@ -156,7 +186,7 @@ def _read_value(s: str, i: int) -> tuple[Any, int]:
     return word, j
 
 
-def _split_payload(s: str) -> dict[str, Any]:
+def _split_payload(s: str, encoding: str = "utf-8") -> dict[str, Any]:
     """Parse 'var=value,var2={...},...' into a dict; tolerate bare values."""
     out: dict[str, Any] = {}
     i = 0
@@ -167,11 +197,11 @@ def _split_payload(s: str) -> dict[str, Any]:
         while j < n and (s[j].isalnum() or s[j] in "_-"):
             j += 1
         if j < n and s[j] == "=":
-            v, nxt = _read_value(s, j + 1)
+            v, nxt = _read_value(s, j + 1, encoding)
             out[s[i:j]] = v
             i = nxt
         else:
-            v, nxt = _read_value(s, i)
+            v, nxt = _read_value(s, i, encoding)
             out[f"_bare{bare_index}"] = v
             bare_index += 1
             i = nxt
@@ -182,10 +212,12 @@ def _split_payload(s: str) -> dict[str, Any]:
     return out
 
 
-def parse_mi_line(line: str) -> dict[str, Any] | None:
+def parse_mi_line(line: str, encoding: str = "utf-8") -> dict[str, Any] | None:
     """Classify and parse one MI output line.
 
-    Returns {kind, class, token, payload} or None for blank/prompt lines.
+    `encoding` is the byte encoding behind the escape sequences gdb emitted
+    (utf-8 for the wsl transport, mbcs for Windows gdb).  Returns
+    {kind, class, token, payload} or None for blank/prompt lines.
     kind ∈ {result, exec, notify, console, log, target, prompt, noise}
     """
     line = line.rstrip("\r\n")
@@ -204,7 +236,14 @@ def parse_mi_line(line: str) -> dict[str, Any] | None:
         s = s[j:]
 
     if not s or s[0] not in _MI_FIRST_CHARS:
-        return {"kind": "noise", "class": None, "token": token, "payload": s}
+        # noise = non-MI text (typically the inferior's raw stdout).  The
+        # caller hands us a latin-1 byte view; re-decode it in the transport
+        # encoding so program output (中文 banners, GBK text) stays readable.
+        try:
+            payload = s.encode("latin-1").decode(encoding, "replace")
+        except UnicodeEncodeError:
+            payload = s
+        return {"kind": "noise", "class": None, "token": token, "payload": payload}
 
     kind_map = {"^": "result", "*": "exec", "=": "notify",
                 "~": "console", "&": "log", "@": "target"}
@@ -212,7 +251,7 @@ def parse_mi_line(line: str) -> dict[str, Any] | None:
     s = s[1:]
 
     if kind in ("console", "log", "target"):
-        text, _ = _read_string(s, 0)
+        text, _ = _read_string(s, 0, encoding)
         return {"kind": kind, "class": None, "token": token, "payload": text}
 
     # result / exec / notify: "<class>[,payload]"
@@ -221,7 +260,7 @@ def parse_mi_line(line: str) -> dict[str, Any] | None:
         cls, payload_src = s, ""
     else:
         cls, payload_src = s[:comma], s[comma + 1 :]
-    payload = _split_payload(payload_src) if payload_src else {}
+    payload = _split_payload(payload_src, encoding) if payload_src else {}
     return {"kind": kind, "class": cls, "token": token, "payload": payload}
 
 

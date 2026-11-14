@@ -158,6 +158,31 @@ class TestSessionFlow:
         with pytest.raises(GdbError):
             session.cmd("-frobnicate")  # unknown → fake replies ^error
 
+    def test_console_cmd(self, session):
+        session.load("C:\\fake\\target.exe")
+        res = session.console_cmd("handle SIGTRAP nostop noprint pass")
+        assert res["command"] == "handle SIGTRAP nostop noprint pass"
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            if any("handle SIGTRAP" in line for line in session.console):
+                break
+            time.sleep(0.1)
+        assert any("handle SIGTRAP" in line for line in session.console)
+
+    def test_console_cmd_empty_raises(self, session):
+        with pytest.raises(GdbError):
+            session.console_cmd("   ")
+
+    def test_console_cmd_while_running_raises(self, session):
+        session.load("C:\\fake\\target.exe")
+        session.insert_break("*0x00401370")
+        session.run()
+        session.wait_stop(timeout=5)
+        session.state["running"] = True  # sync-mode MI would block
+        with pytest.raises(GdbError, match="running"):
+            session.console_cmd("info proc mappings")
+        session.state["running"] = False
+
     def test_console_capture(self, session):
         session.load("C:\fake\target.exe")
         # the ~console line arrives asynchronously — poll briefly

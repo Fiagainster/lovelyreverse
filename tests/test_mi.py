@@ -114,3 +114,59 @@ class TestHelpers:
         ]}
         zipped = format_register_values(names, values)
         assert zipped == {"rax": "0x11", "rcx": "0x33"}
+
+
+class TestUnescapeBytes:
+    """Escapes must be decoded at BYTE level: gdb emits non-ASCII as octal or
+    \\xHH byte escapes, and utf-8 sequences must reassemble (中文 paths)."""
+
+    BS = chr(92)  # backslash, kept out of source escapes
+
+    def _oct(self, text: str) -> str:
+        return "".join(f"{self.BS}{b:03o}" for b in text.encode("utf-8"))
+
+    def _hex(self, text: str) -> str:
+        return "".join(f"{self.BS}x{b:02x}" for b in text.encode("utf-8"))
+
+    def test_octal_utf8_path(self):
+        payload = parse_mi_line(f'~"Reading symbols from /mnt/d/{self._oct("临时取证")}/x.bin..."')["payload"]
+        assert "临时取证" in payload
+
+    def test_hex_utf8_path(self):
+        payload = parse_mi_line(f'~"path /mnt/d/{self._hex("临时")} end"')["payload"]
+        assert "临时" in payload
+
+    def test_octal_newline_not_eaten_by_nul_rule(self):
+        # the old parser mapped "\0" to NUL and left the "12" dangling
+        assert parse_mi_line(f'~"a{self.BS}012b"')["payload"] == "a\nb"
+
+    def test_octal_letter(self):
+        assert parse_mi_line(f'~"x{self.BS}101y"')["payload"] == "xAy"
+
+    def test_nul_octal(self):
+        assert parse_mi_line(f'~"a{self.BS}000b"')["payload"] == "a\x00b"
+
+    def test_ascii_untouched(self):
+        assert parse_mi_line('~"hello \\n world \\t \\\\"')["payload"] == "hello \n world \t \\"
+
+    def test_payload_strings_use_encoding(self):
+        line = '*stopped,frame={addr="0x1",file="' + self._oct("证") + '.c"}'
+        r = parse_mi_line(line)
+        assert "证" in r["payload"]["frame"]["file"]
+
+    def test_mixed_raw_and_escapes_latin1_view(self):
+        # REAL observed gdb output: 临 as raw utf-8 bytes, 时/取/证 as a MIX
+        # of raw bytes and \NNN octal escapes — the caller hands us a
+        # latin-1 (byte-transparent) view of the line and the parser must
+        # reassemble every char.
+        raw = (b'~"Reading symbols from /mnt/d/\xe4\xb8\xb4\xe6\\227\xb6'
+               b'\xe5\\217\\226\xe8\xaf\\201/\xe6\xb5\\213\xe8\xaf\\225/ch18.bin"')
+        payload = parse_mi_line(raw.decode("latin-1"), "utf-8")["payload"]
+        assert "临时取证" in payload and "测试" in payload
+
+    def test_noise_payload_decoded_with_transport_encoding(self):
+        # program stdout (noise) is a latin-1 byte view too — utf-8 text
+        # must survive, mbcs mojibake must not crash
+        raw = "欢迎来到挑战".encode("utf-8").decode("latin-1")
+        r = parse_mi_line(raw, "utf-8")
+        assert r["kind"] == "noise" and "欢迎来到挑战" in r["payload"]

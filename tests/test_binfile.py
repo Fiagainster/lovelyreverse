@@ -217,6 +217,51 @@ class TestELF:
         assert parse_elf(b"") is None
 
 
+# ------------------------------------------------------------------- shstrtab
+
+def _craft_elf64_with_shstrtab(shstrndx: int) -> bytes:
+    """ELF64: NULL + .text(PROGBITS) + .shstrtab(STRTAB); e_shstrndx settable."""
+    names = b"\x00.text\x00.shstrtab\x00"
+    eh = bytearray(64)
+    eh[0:4] = b"\x7fELF"
+    eh[4], eh[5], eh[6] = 2, 1, 1
+    struct.pack_into("<HH", eh, 16, 2, 62)
+    struct.pack_into("<Q", eh, 40, 64)                       # e_shoff
+    struct.pack_into("<HHHHHH", eh, 52, 64, 0, 0, 64, 3, shstrndx)
+
+    def sh(name_off, stype, offset, size):
+        b = bytearray(64)
+        struct.pack_into("<IIQQQQ", b, 0, name_off, stype, 0, 0x1000, offset, size)
+        return bytes(b)
+
+    out = bytearray(eh)
+    out.extend(sh(0, 0, 0, 0))                    # NULL
+    out.extend(sh(1, 1, 256 + len(names), 0x10))  # .text
+    out.extend(sh(7, 3, 256, len(names)))         # .shstrtab
+    out.extend(b"\x00" * (256 - len(out)))
+    out.extend(names)
+    out.extend(b"\x90" * 0x10)
+    return bytes(out)
+
+
+class TestElfShstrtab:
+    """Section names were "undefined" — the parser never read .shstrtab."""
+
+    def test_names_resolved(self):
+        t = parse_elf(_craft_elf64_with_shstrtab(shstrndx=2))
+        names = [s["name"] for s in t["sections"]]
+        assert names[1] == ".text" and names[2] == ".shstrtab"
+
+    def test_bogus_shstrndx_falls_back_to_strtab(self):
+        t = parse_elf(_craft_elf64_with_shstrtab(shstrndx=0))
+        names = [s["name"] for s in t["sections"]]
+        assert names[1] == ".text"
+
+    def test_overlay_math_unaffected(self):
+        t = parse_elf(_craft_elf64_with_shstrtab(shstrndx=2))
+        assert t["overlay_size"] == 0
+
+
 # ----------------------------------------------------------------- composite
 
 class TestTriage:

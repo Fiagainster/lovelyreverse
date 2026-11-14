@@ -189,13 +189,15 @@ def parse_elf(data: bytes) -> dict[str, Any] | None:
         if is64:
             e_type, e_machine = struct.unpack_from(f"{end}HH", data, 16)
             e_shoff = struct.unpack_from(f"{end}Q", data, 0x28)[0]
-            e_shentsize, e_shnum = struct.unpack_from(f"{end}HH", data, 0x3A)
+            e_shentsize, e_shnum, e_shstrndx = struct.unpack_from(f"{end}HHH", data, 0x3A)
         else:
             e_type, e_machine = struct.unpack_from(f"{end}HH", data, 16)
             e_shoff = struct.unpack_from(f"{end}I", data, 0x20)[0]
-            e_shentsize, e_shnum = struct.unpack_from(f"{end}HH", data, 0x2E)
+            e_shentsize, e_shnum, e_shstrndx = struct.unpack_from(f"{end}HHH", data, 0x2E)
 
-        sections = []
+        # section headers first (names resolved right after from .shstrtab —
+        # without it the triage panel showed numbered sections and "undefined")
+        raw_secs = []
         end_max = 0
         for i in range(min(e_shnum, 128)):
             off = e_shoff + i * e_shentsize
@@ -209,17 +211,41 @@ def parse_elf(data: bytes) -> dict[str, Any] | None:
                 name_off, s_type, _flags, _addr, offset, size = struct.unpack_from(
                     f"{end}IIIIII", data, off
                 )
-            # Section names live in shstrtab; resolve lazily from section[0] heuristic.
+            raw_secs.append((i, name_off, s_type, offset, size))
+            if s_type != 8:  # SHT_NOBITS
+                end_max = max(end_max, offset + size)
+        end_max = max(end_max, e_shoff + e_shnum * e_shentsize if e_shnum else 0)
+
+        # resolve names from the string-table section (e_shstrndx; fall back
+        # to the first SHT_STRTAB) — hand-crafted ELFs sometimes lie about
+        # e_shstrndx (e.g. leaving 0), so require the candidate to actually
+        # be a SHT_STRTAB
+        names: dict[int, str] = {}
+        strsec = None
+        if 0 <= e_shstrndx < len(raw_secs) and raw_secs[e_shstrndx][2] == 3:
+            strsec = raw_secs[e_shstrndx]
+        if strsec is None:
+            strsec = next((s for s in raw_secs if s[2] == 3), None)
+        if strsec is not None:
+            _i, _no, stype, soff, ssize = strsec
+            tab = data[soff : soff + ssize]
+            if tab:
+                for i, name_off, _t, _o, _s in raw_secs:
+                    if 0 <= name_off < len(tab):
+                        nul = tab.find(b"\x00", name_off)
+                        nm = tab[name_off : nul if nul >= 0 else len(tab)]
+                        names[i] = nm.decode("latin1", "replace")
+
+        sections = []
+        for i, name_off, s_type, offset, size in raw_secs:
             sections.append({
                 "index": i,
+                "name": names.get(i, ""),
                 "type": s_type,
                 "offset": offset,
                 "size": size,
                 "entropy": shannon_entropy(data[offset : offset + min(size, 1 << 20)]) if size else 0.0,
             })
-            if s_type != 8:  # SHT_NOBITS
-                end_max = max(end_max, offset + size)
-        end_max = max(end_max, e_shoff + e_shnum * e_shentsize if e_shnum else 0)
         overlay = len(data) - end_max if len(data) > end_max > 0 else 0
         return {
             "format": "ELF",

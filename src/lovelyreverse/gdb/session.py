@@ -179,8 +179,13 @@ class GdbSession:
     def _reader_stdout(self) -> None:
         assert self.proc and self.proc.stdout
         for raw in iter(self.proc.stdout.readline, b""):
-            line = raw.decode(self.io_encoding, "replace")
-            rec = parse_mi_line(line)
+            # latin-1 = byte-transparent view: gdb MIXES raw high bytes with
+            # \xHH/\NNN escapes in one MI string, so decoding here (utf-8 or
+            # mbcs) would shred multi-byte sequences before the parser can
+            # reassemble them.  parse_mi_line + _unescape_c collect bytes and
+            # decode once with the transport encoding.
+            line = raw.decode("latin-1")
+            rec = parse_mi_line(line, self.io_encoding)
             if rec is None:
                 continue
             kind = rec["kind"]
@@ -194,7 +199,10 @@ class GdbSession:
                 self._push_console("[log] " + rec["payload"])
                 continue
             if kind == "noise":
-                self._push_console("[noise] " + str(rec["payload"]))
+                # stdout lines that don't parse as MI are almost always the
+                # inferior's raw stdout interleaved between MI records (it
+                # writes to the same pipe) — show them as plain program output
+                self._push_console(str(rec["payload"]))
                 continue
             token = rec["token"]
             if kind == "result" and token and token in self._pending:
@@ -420,6 +428,22 @@ class GdbSession:
         except GdbError:
             raise
         return {"stopping": True}
+
+    def console_cmd(self, text: str) -> dict[str, Any]:
+        """Run a raw gdb CLI command through MI's console escape
+        (``-interpreter-exec console``).  This reaches everything the MI
+        dialect hides — ``handle SIGTRAP nostop pass`` (self-int3 samples
+        whose own signal handlers must receive their traps), ``info proc
+        mappings``, ``x/16xw``…  Output arrives through the regular console
+        stream and is shown in the gdb console box."""
+        text = text.strip()
+        if not text:
+            raise GdbError("empty command")
+        self._require_stopped("running console commands")
+        # MI wants a C-string, not shlex quoting (single quotes confuse gdb)
+        quoted = '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        self.cmd(f"-interpreter-exec console {quoted}")
+        return {"command": text}
 
     def wait_stop(self, timeout: float = 10.0) -> dict[str, Any] | None:
         """Poll helper: wait until the target reports a stop."""

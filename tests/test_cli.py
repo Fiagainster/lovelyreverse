@@ -95,3 +95,41 @@ class TestScan:
         d2 = make_ghidra_dir(tmp_path, "ghidra_12.2_PUBLIC")
         monkeypatch.setattr(cfg, "_hint_dirs", lambda: [str(tmp_path)])
         assert find_ghidra_install_dir() == d2  # sorted() → lexicographic, 12.2 last
+
+
+class TestNormalizeArgv:
+    """A bare `python -m lovelyreverse` used to reach _cmd_serve without the
+    serve subparser's defaults and crash with AttributeError: 'Namespace'
+    object has no attribute 'ghidra'."""
+
+    def test_bare_defaults_to_serve(self):
+        from lovelyreverse.cli import _normalize_argv
+        assert _normalize_argv([]) == ["serve"]
+        assert _normalize_argv(["--no-browser"]) == ["serve", "--no-browser"]
+        assert _normalize_argv(["--ghidra", "X"]) == ["serve", "--ghidra", "X"]
+        assert _normalize_argv(["--host", "127.0.0.1", "--port", "9"]) == [
+            "serve", "--host", "127.0.0.1", "--port", "9"]
+
+    def test_explicit_subcommands_pass_through(self):
+        from lovelyreverse.cli import _normalize_argv
+        assert _normalize_argv(["serve"]) == ["serve"]
+        assert _normalize_argv(["serve", "--port", "9"]) == ["serve", "--port", "9"]
+        assert _normalize_argv(["doctor"]) == ["doctor"]
+        assert _normalize_argv(["doctor", "--ghidra", "X"]) == ["doctor", "--ghidra", "X"]
+
+    def test_top_level_flags_pass_through(self):
+        from lovelyreverse.cli import _normalize_argv
+        assert _normalize_argv(["--version"]) == ["--version"]
+        assert _normalize_argv(["-h"]) == ["-h"]
+        assert _normalize_argv(["--help"]) == ["--help"]
+
+    def test_bare_main_parses_serve_defaults(self, monkeypatch):
+        # main([]) must reach _cmd_serve with host/port/ghidra present —
+        # stub out everything past parsing
+        import lovelyreverse.cli as cli
+
+        seen = {}
+        monkeypatch.setattr(cli, "_cmd_serve", lambda args: seen.update(vars(args)) or 0)
+        assert cli.main([]) == 0
+        assert "ghidra" in seen and "host" in seen and "port" in seen
+        assert seen["ghidra"] is None and seen["no_browser"] is False

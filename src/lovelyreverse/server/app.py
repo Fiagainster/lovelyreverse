@@ -153,7 +153,11 @@ class AppState:
             try:
                 env = dict(os.environ, WSL_UTF8="1")
                 out = subprocess.run(
-                    ["wsl", "-l", "-q"], capture_output=True, text=True,
+                    ["wsl", "-l", "-q"], capture_output=True,
+                    # wsl.exe writes UTF-8 even on zh-CN consoles (proxy warnings
+                    # etc.); the default GBK locale decode raised inside Popen's
+                    # own reader thread — untouchable from here.
+                    encoding="utf-8", errors="replace",
                     timeout=20, env=env,
                 )
                 names = [ln.strip() for ln in out.stdout.replace("\x00", "").splitlines()
@@ -168,7 +172,8 @@ class AppState:
                 try:
                     r = subprocess.run(
                         ["wsl", "-d", probe, "--", "gdb", "--version"],
-                        capture_output=True, text=True, timeout=30, env=env,
+                        capture_output=True, encoding="utf-8", errors="replace",
+                        timeout=30, env=env,
                     )
                     wsl_ok = r.returncode == 0
                 except Exception:  # noqa: BLE001
@@ -187,13 +192,29 @@ class AppState:
         from lovelyreverse.gdb.session import GdbSession, GdbError
 
         if self.gdb_session is not None:
+            old_prog = None
+            alive = False
             try:
                 st = self.gdb_session.status()
-                if not st["dead"]:
-                    raise GdbError("a gdb session is already active — end it first")
-            except GdbError:
-                raise
+                old_prog = st.get("program")
+                alive = not st["dead"]
             except Exception:  # noqa: BLE001 — dead session object, replace it
+                alive = False
+            if alive and self.source_path and old_prog \
+                    and os.path.normcase(os.path.abspath(old_prog)) \
+                    != os.path.normcase(os.path.abspath(self.source_path)):
+                # sample switched since the session was born — the old gdb is
+                # still pointing at the previous file; restart on the new one
+                # (a silent "already active" error here made the start button
+                # look dead after switching samples)
+                try:
+                    self.gdb_session.exit()
+                except Exception:  # noqa: BLE001
+                    pass
+                self.gdb_session = None
+            elif alive:
+                raise GdbError("a gdb session is already active — end it first")
+            else:
                 self.gdb_session = None
         if not self.source_path:
             raise GdbError("no program loaded — open a binary first")
@@ -552,6 +573,16 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                 if sess is None:
                     return self._error("no gdb session", 409)
                 action = str(body.get("action", ""))
+                if action == "console":
+                    # raw gdb CLI command (e.g. "handle SIGTRAP nostop pass",
+                    # "info proc mappings") — the escape hatch for everything
+                    # the fixed exec buttons don't cover
+                    text = str(body.get("cmd", ""))
+                    try:
+                        res = sess.console_cmd(text)
+                    except Exception as e:  # noqa: BLE001
+                        return self._error(f"{type(e).__name__}: {e}", 500)
+                    return self._json({"ok": True, **res, "status": sess.status()})
                 mapping = {"run": sess.run, "continue": sess.continue_,
                            "next": sess.next_, "step": sess.step_,
                            "nexti": sess.nexti_, "stepi": sess.stepi_,

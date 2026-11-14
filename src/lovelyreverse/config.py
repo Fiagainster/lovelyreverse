@@ -160,7 +160,10 @@ def find_java(timeout: float = 10.0) -> tuple[str | None, int | None]:
     if exe is None:
         return None, None
     try:
-        r = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=timeout)
+        # localized java output may be GBK or UTF-8 depending on console —
+        # never let a strict decode kill Popen's internal reader thread
+        r = subprocess.run([exe, "-version"], capture_output=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         return exe, None
     out = (r.stderr or "") + "\n" + (r.stdout or "")

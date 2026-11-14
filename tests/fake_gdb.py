@@ -62,6 +62,10 @@ for line in sys.stdin:
         out(f'{token}^done,stack=[frame={{level="0",func="main",addr="0x00401370"}},frame={{level="1",func="__start",addr="0x00401000"}}]')
     elif line.startswith("-data-evaluate-expression"):
         out(f'{token}^done,value="42"')
+    elif line.startswith("-interpreter-exec console"):
+        # console escape: echo the command back through the ~console stream
+        out(f'~"console: {line[len("-interpreter-exec console "):].strip(chr(34))}\\n"')
+        out(f"{token}^done")
     elif line == "-gdb-exit":
         out(f"{token}^exit")
         break

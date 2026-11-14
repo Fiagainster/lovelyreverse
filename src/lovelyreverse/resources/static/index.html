@@ -137,6 +137,7 @@
           <button class="btn btn-ghost btn-xs" id="hex-go" data-i18n="hex.go">read</button>
           <button class="btn btn-ghost btn-xs" id="hex-send" data-i18n-title="hex.send.title" title="send to decoder">⚗</button>
           <button class="btn btn-ghost btn-xs" id="hex-disasm" data-i18n-title="hex.disasm.title" title="raw-disassemble from here">⚡</button>
+          <button class="btn btn-ghost btn-xs" id="hex-copy" data-i18n-title="hex.copy.title" title="copy this page as hexdump">⧉</button>
           <span class="code-title" id="hex-info"></span>
         </div>
         <div class="code" id="code-hex"><div class="code-empty" data-i18n="hex.empty">pick a memory block and read it raw</div></div>
@@ -157,7 +158,7 @@
         </div>
         <div class="gdb-args-row">
           <input id="gdb-args" type="text" spellcheck="false" placeholder="程序参数（可选）" />
-          <input id="gdb-stdin" type="text" spellcheck="false" placeholder="stdin 文本（可选，喂给 fgets/scanf）" />
+          <input id="gdb-stdin" type="text" spellcheck="false" placeholder="stdin 文本（可选；仅会话启动时投递一次，改动需重启会话）" />
           <input id="gdb-env" type="text" spellcheck="false" placeholder="环境变量（可选，逗号分隔 KEY=VALUE，如 DISPLAY=:99）" />
           <span class="dim" id="gdb-target"></span>
         </div>
@@ -202,6 +203,10 @@
             </div>
             <div class="list gdb-list" id="gdb-mem"></div>
             <div class="dec-label">gdb 控制台</div>
+            <div class="gdb-bp-row">
+              <input id="gdb-cmd" type="text" spellcheck="false" data-i18n-ph="gdb.cmd.ph" placeholder="gdb 命令，如 handle SIGTRAP nostop pass" />
+              <button class="btn btn-xs" id="gdb-cmd-send">⌨</button>
+            </div>
             <div class="list gdb-console" id="gdb-console"></div>
           </div>
         </div>
@@ -315,6 +320,11 @@
         <div class="dec-col">
           <div class="dec-label"><span data-i18n="dec.output">output</span> <span class="dim" id="dec-out-size"></span>
             <label class="chk"><input type="checkbox" id="dec-show-hex"><span data-i18n="dec.hexview">hex view</span></label>
+            <select id="dec-enc" class="mini-input" title="文本显示编码（Latin-1 逐字节保真，GBK 用于中文样本）">
+              <option value="utf-8">UTF-8</option>
+              <option value="gbk">GBK</option>
+              <option value="latin1">Latin-1</option>
+            </select>
             <button class="btn btn-ghost btn-xs" id="btn-dec-copy" data-i18n="btn.copy" data-i18n-title="btn.copy.title">⧉ copy</button>
           </div>
           <textarea id="dec-output" spellcheck="false" readonly data-i18n-ph="dec.result.ph" placeholder="result appears here"></textarea>

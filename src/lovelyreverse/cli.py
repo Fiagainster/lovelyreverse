@@ -19,6 +19,20 @@ from lovelyreverse.engine.manager import EngineManager
 from lovelyreverse.server.app import AppState, serve
 
 
+_TOP_LEVEL_FLAGS = {"-h", "--help", "--version"}
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """Default subcommand plumbing: a bare `python -m lovelyreverse` (or a
+    bare `lvr`, or `lvr --no-browser`) must behave as `serve`.  Without this,
+    the top-level Namespace reaches _cmd_serve without the serve subparser's
+    defaults (--host/--port/--ghidra) and crashes with AttributeError."""
+    first = argv[0] if argv else None
+    if not argv or (first not in ("serve", "doctor") and first not in _TOP_LEVEL_FLAGS):
+        return ["serve", *argv]
+    return list(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     # Windows consoles default to GBK/CP936 — gdb bridge console streams can
     # carry mojibake, and a GBK encode error inside a request thread would
@@ -48,7 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     p_doc = sub.add_parser("doctor", help="check the environment: Python / Java / Ghidra / port")
     p_doc.add_argument("--ghidra", default=None, help="Ghidra install dir to verify explicitly")
 
-    args = parser.parse_args(argv)
+    args_in = list(sys.argv[1:]) if argv is None else list(argv)
+    args = parser.parse_args(_normalize_argv(args_in))
     command = args.command or "serve"
     if command == "doctor":
         return _cmd_doctor(args)
@@ -62,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    ghidra_dir, warns = resolve_ghidra_dir(args.ghidra)
+    ghidra_dir, warns = resolve_ghidra_dir(getattr(args, "ghidra", None))
     for w in warns:
         print(f"[!] {w}", file=sys.stderr)
     if ghidra_dir is None:
