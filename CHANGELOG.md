@@ -2,6 +2,31 @@
 
 所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本遵循语义化。
 
+## [0.4.2] — 2026-11-15
+
+真题第二轮（Root-Me ch18/ch20 纯 UI 做题暴露的短板，全程复盘见 `docs/writeup-ch20.md` 与 dev-notes 踩坑 #27–#30）。
+
+### 新增
+
+- **HEX 多页送解码实验室**：Shift+发送一次连取最多 8 页自动拼接（块尾 clamp）——自哈希样本要 163 字节完整代码段，单页 chunk 不够
+- **解码实验室输出编码切换**：utf-8 / gbk / latin-1（字节保真）下拉，非 UTF-8 样本不再一屏 FFFD
+- **HEX 复制按钮 ⧉**：当前窗口数据导出为标准 hexdump（`0x%08x  hex |ascii|`）
+- **gdb 切样本自动重启会话**：旧会话指向别的程序时自动退出重启，前端给出 stale 提示——不再被 "already active" 静默吞掉启动点击
+
+### 修复
+
+- **gdb 控制台中文路径 mojibake（根修）**：WSL gdb 的 MI C 字符串里 raw UTF-8 字节与 `\xHH`/`\NNN` 转义混编，行级 UTF-8 先行解码把多字节序列拦腰截断 → reader 改 latin-1 字节透明读，unescape 字节级收集后按传输编码统一 decode（dev-notes #27，test_mi 8 例回归固化）
+- **HEX 输 unmapped 绝对地址倍地址读失败**：0x08049120 被当块内偏移原样发送（实际请求 ram:10091120）→ 前端先定位所属块换算；查不到则 toast 列出可读范围，不再发注定失败的请求
+- **裸 `python -m lovelyreverse` 启动崩溃**：顶层 Namespace 缺 serve 子命令默认值（AttributeError: ghidra）→ `_normalize_argv` 补 serve 前缀，`-h/--help/--version` 白名单放行
+- **wsl 探测炸 Popen 内部 reader 线程**：`wsl.exe` stderr 的 UTF-8 中文警告按 locale GBK 严格解码 → UnicodeDecodeError 出在不可捕获的 `_readerthread` 线程；subprocess 显式 `encoding="utf-8", errors="replace"`（wsl 两处 + java -version 一处）（dev-notes #29）
+- **ELF section 名全显示 undefined**：binfile 解析器从不读 `.shstrtab` → 解析 e_shstrndx 两遍定位（非法索引回退首个 STRTAB），名字与 overlay 计算解耦
+- **gdb stdin 投递语义不明**：placeholder 注明「仅会话启动时投递一次，改动需重启会话」
+
+### 真题验证
+
+- **ch20.bin**（Root-Me 自哈希 crackme，732 B）：裸反汇编读出 syscall 骨架 → HEX 多页拉满 163 字节代码 → 页内算种子 **0xAC77E166** → 直推密码 **`HardW@re_Br3akPoiNT_r0ckS`** → gdb 桥喂 stdin 动态闭环成功
+- **ch18.bin**（VM opcode 型，5 KB）：纯 UI 解出；strace 实证程序任何输入下零 write——成败只能靠 gdb 内存确认（dev-notes #28）
+
 ## [0.4.1] — 2026-11-14
 
 真题打磨（Root-Me KeygenMe by int_0x80 全程工具化做题暴露的短板）。

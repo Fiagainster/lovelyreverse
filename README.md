@@ -39,8 +39,8 @@
 | **✎ decompile** | C 伪代码 + 自研语法高亮；**代码里的函数名/地址可点击跳转**；✎ 重命名 / ✚ 备注 / 复制 / 下载 `.c` |
 | **⌗ disassembly** | 汇编清单（地址/字节/助记符），call 目标可点击跟进 |
 | **◈ call graph** | **函数调用图**（Ghidra 式层次布局）：caller 在上 / callee 在下，层次分层 + 重心排序减少交叉；实线箭头表示调用方向、虚线表示回边；**双击节点增量展开**，滚轮缩放、拖拽平移 |
-| **⚙ 动态调试** | **gdb 桥双传输**（WSL Linux ELF / Windows 本机 PE）：断点（pending 队列，启动自动补挂）、运行/继续/行级单步/**指令级单步**（strip 样本行级 step 会失败）、中断、**写寄存器绕反调试**（$rax=0）、全寄存器面板、调用栈、内存读取一键送解码实验室、程序参数与 stdin 暂存、**环境变量启动参数**（GTK 类 GUI 样本喂 `DISPLAY=:99`） |
-| **⊞ memory hex** | 按内存块原始读取，翻页/跳偏移（**输入完整 vaddr 自动定位所在内存块**）；一键送入解码实验室 |
+| **⚙ 动态调试** | **gdb 桥双传输**（WSL Linux ELF / Windows 本机 PE）：断点（pending 队列，启动自动补挂）、运行/继续/行级单步/**指令级单步**（strip 样本行级 step 会失败）、中断、**写寄存器绕反调试**（$rax=0）、全寄存器面板、调用栈、内存读取一键送解码实验室、程序参数与 stdin 暂存、**环境变量启动参数**（GTK 类 GUI 样本喂 `DISPLAY=:99`）、**切样本自动重启会话**（旧会话指向别的程序时提示并可一键切换） |
+| **⊞ memory hex** | 按内存块原始读取，翻页/跳偏移（**输入完整 vaddr 自动定位所在内存块**，unmapped 地址列出可读范围）；⧉ 复制为标准 hexdump；**Shift+一键送解码实验室可连发多页**（跨块大数据一次拉满） |
 | **⚡ raw disasm** | **按执行路径的裸反汇编**（混淆兜底）：任意地址起，capstone 顺着真实执行流解码——无条件 JMP 跟随目标、**CALL 实为 JMP 识别**（压栈返回进垃圾的返回地址标记「死路」跳过）、**读取窗口向前扩 512B 余量**（call-as-jmp 目标常比命名入口靠前，向后跳转不断流）、反调试垃圾字节自动恢复到条件跳转目标；HEX 视图 ⚡ 一键从当前字节起解，跳转目标可点击跟进 |
 | **strings** | Ghidra 识别的字符串，一键送入解码实验室；**单击查引用（谁在用它），双击直接跳进引用函数的反编译并高亮那一行** |
 | **imports / exports** | 导入函数（含所属库）与导出入口；**点导入即查调用者**（thunk xref → caller → 反编译） |
@@ -51,7 +51,7 @@
 - **做题链联动**（照着真实解题流程做：查壳 → 字符串锚点 → 交叉引用 → 反编译）：查壳结论面板给出方向（干净 / 疑似加壳 + 下一步提示）；字符串单击看「谁在用它」，双击跳进反编译的**精确引用行**；导入点击直达调用者。**全站右键菜单**（10 类对象：反编译符号 / 选中内容 / xref 行 / 常量行 / 函数行 / 字符串 / 导入 / 导出 / 搜索结果 / 汇编行）——跳转、查引用、反汇编、跟随跳转、送解码、重命名、备注、复制，全是快捷入口。字符串和代码不再是两个孤岛。
 - **加密常量识别**（FindCrypt 精髓）：内置 55 个签名——AES S-box/Te0、SM4 S-box/FK、SM3 IV、MD5/SHA-1/SHA-256/SHA-512 IV 与 K 表、Blowfish P 数组、Camellia σ、TEA/XTEA δ、ChaCha σ、Base64/32/Uuencode 字母表、CRC 表、ECC 域素数（程序化生成，零抄写错误）。自动展开大小端双变体，命中自动归属到函数。打开一个带 AES 的 crackme，`.rdata` 里的 S-box 直接标出来。
 - **统一搜索**（底部 ⌕ 搜索页签）：一个输入框同时搜**字符串、函数名**，粘贴偶数位 hex 自动追加**内存字节**搜索；点字符串命中直达交叉引用，点函数命中直接反编译，清空输入框即还原空态。
-- **解码实验室**（CyberChef 精髓）：30 种操作**链式**叠加（hex/base64/base32/ascii85/URL/ROT-n/ROT47/XOR/XOR 定位/RC4/位反转/C 转义/gzip/zlib/raw inflate/hexdump/MD5/SHA-1/SHA-256…），输入支持 text/hex/b64 三种模式；**一键预设**（Base64 / Hex / ROT13 / 字节反转 / XOR 爆破）+ 操作中文标签 + 空链使用指引，打开就知道怎么用。
+- **解码实验室**（CyberChef 精髓）：30 种操作**链式**叠加（hex/base64/base32/ascii85/URL/ROT-n/ROT47/XOR/XOR 定位/RC4/位反转/C 转义/gzip/zlib/raw inflate/hexdump/MD5/SHA-1/SHA-256…），输入支持 text/hex/b64 三种模式；输出侧**编码可切换**（utf-8 / gbk / latin-1 字节保真——非 UTF-8 样本不再花屏）；**一键预设**（Base64 / Hex / ROT13 / 字节反转 / XOR 爆破）+ 操作中文标签 + 空链使用指引，打开就知道怎么用。
 - **XOR 工具箱**：
   - 单字节爆破 + 可打印评分排序（`⛨ xor brute`）
   - **已知明文推密钥**（`⛭ derive key`）：输入 `flag{` 前缀，直接算出循环 XOR 密钥（含周期一致性检查）
@@ -97,6 +97,7 @@
 - 动态调试（v0.4.0）：WSL 自编 ptrace 反调试 crackme——断点命中 → `$rax=0` 绕过 → `strcmp@plt` 偷 serial，全链路 5.8s；Windows `challenge1.exe`——内存偷 XOR 缓冲（key 0x12 实测推导）+ `ucrtbase!strcmp` 偷硬编码密文 → 解出 flag
 - APK 静态分析（v0.4.0）：合成样本 6 条目 + 2 dex，类名/C2 URL/密钥全数提取
 - Root-Me KeygenMe（v0.4.1 真题打磨）：strip + 重叠指令混淆 + RDTSC 反调试×3——静态 ⚡ 裸反汇编三段接力还原 imul 主循环推算法，动态 gdb 断点偷参/寄存器对拍，serial 实测 GG 通过
+- Root-Me 自哈希 crackme（v0.4.2 真题第二轮）：732 B 手写汇编——裸反汇编读出 syscall 骨架，HEX Shift 多页拉满 163 字节代码送解码实验室，页内算出种子 0xAC77E166 直推密码，gdb 桥喂 stdin 动态闭环（[writeup-ch20.md](docs/writeup-ch20.md) 逐步复现）；邻题 ch18（VM opcode 型）纯 UI 解出，strace 实证其零输出、成败只能靠内存确认
 
 <p align="center">
   <img src="docs/screenshots/unpack.png" width="72%" alt="PyInstaller unpack modal">
@@ -108,7 +109,7 @@
 
 | 档位 | 题型 |
 |---|---|
-| **甜蜜区**——显著加速甚至半自动出 flag | 异或/编码链 crackme、标准算法识别（SM4/AES/MD5…）、PyInstaller 打包、简单前缀/查表比较、未知样本预处理（查壳/熵/overlay）、**运行时才出答案的反调试 crackme**（⚙ 动态调试闭环：断点偷参 → `$rax=0` 绕过 → 内存偷密文，Random Crackme 实测） |
+| **甜蜜区**——显著加速甚至半自动出 flag | 异或/编码链 crackme、标准算法识别（SM4/AES/MD5…）、PyInstaller 打包、简单前缀/查表比较、未知样本预处理（查壳/熵/overlay）、**运行时才出答案的反调试 crackme**（⚙ 动态调试闭环：断点偷参 → `$rax=0` 绕过 → 内存偷密文，Random Crackme 实测）、**自哈希/查表异或 crackme**（裸反汇编读骨架 + HEX 多页拉字节 + 页内算种子直推，ch20 实测） |
 | **能用，工具当「看」的底座** | 逻辑模拟/迷宫、自定义 VM、执行流混淆（重叠指令/CALL-实为-JMP——⚡ 裸反汇编可一键还原真实路径，KeygenMe 实测 142 条）、花指令轻度混淆——锚点与真实指令齐全，还原靠人 |
 | **不适合**——直接开别的工具 | 溢出/利用（要 debugger+fuzz 全家桶）、魔改壳脱壳、反编译对抗（混淆 pyc/VMP） |
 
@@ -130,7 +131,7 @@
 到 [Releases](https://github.com/Fiagainster/lovelyreverse/releases) 下载最新的 `.whl`，然后：
 
 ```bash
-pip install lovelyreverse-0.4.1-py3-none-any.whl
+pip install lovelyreverse-0.4.2-py3-none-any.whl
 lvr serve
 ```
 
@@ -151,6 +152,8 @@ pip install -e .
 lvr serve
 # 或
 python -m lovelyreverse serve
+# 裸命令也可以（默认子命令就是 serve）
+python -m lovelyreverse
 ```
 
 浏览器自动打开 `http://127.0.0.1:7331`。界面默认**中文 + 浅色主题**（右上角 ⚙ 设置里可切 English / 石墨玫瑰暗色）。三种打开方式：拖文件进页面 / 点 ⌖ 打开二进制 / **粘贴绝对路径回车**。拖入和文件选择走浏览器上传（浏览器拿不到文件的原始位置），会复制到数据目录再分析；**粘贴绝对路径则就地分析**——Ghidra 工程 `_lvr/` 建在样本旁边，不动你的文件。第一次打开一个样本需要跑 Ghidra 自动分析（小文件几十秒），之后秒开。

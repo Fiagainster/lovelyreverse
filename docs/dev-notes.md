@@ -298,3 +298,44 @@
 **踩坑 #26 — 同步模式 gdb 运行态执行 MI 必挂**：目标 running 时任何 MI 命令（如 `-break-list`）会阻塞到 25 s 超时。前端只在停机时轮询的状态类命令也要加 `_require_stopped` 快速失败，别信调用方时序。
 
 **辅助经验 — 浏览器自动化**：browser-use 的 press_key 对自定义 keydown 监听不生效（真用户不受影响），改用 evaluate_script 里 `dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`；click 工具在无头视口报 NATIVE_BROWSER_VIEWPORT_UNAVAILABLE，DOM `.click()` 稳定。
+
+## 自哈希 crackme 真题第二轮（2026-11-15，Unreleased 10 项修复）
+
+ch18（5 KB，VM opcode 型，strace 实证零 write——成败信息是 .rodata 摆设，只能靠 gdb 内存确认）
+与 ch20（732 B，自哈希 + 查表异或，种子 0xAC77E166 完全静态可算，密码 HardW@re_Br3akPoiNT_r0ckS，
+复现手记见 writeup-ch20.md）两题纯 UI 做完，过程中暴露并修复十项：
+
+**踩坑 #27 — gdb MI C 字符串混编转义，行级 UTF-8 解码必死**：WSL gdb 的 MI c-string 里
+raw UTF-8 字节与 `\xHH` 十六进制、`\NNN` 八进制转义混在同一条记录（实测「临」= raw E4 B8 B4，
+「时」= raw E6 + `\227` + raw B6）。行级 utf-8/replace 先行解码会把多字节序列拦腰截断成 FFFD，
+事后 unescape 再怎么拼都补不回来。修法：reader 行级 **latin-1**（字节透明），`_unescape_c`
+字节级收集（hex/octal → 单字节、raw char ≤ 0xFF 收 ord），最后按传输编码（wsl=utf-8 /
+local=mbcs）统一 decode；inferior 噪声分支再 latin-1→transport 二段还原。
+
+**踩坑 #28 — 「程序没输出」先 strace 再怀疑工具**：ch18 任何输入下 exit 0 且零次 write()，
+console 里没有 `Great you Got it` 是程序本身行为不是桥的回归（ch20 的输出在 latin-1 改动后
+实测照常到达）。动态题确认成败别只盯 stdout——内存/寄存器同样是回执。
+
+**踩坑 #29 — wsl.exe stderr 是 UTF-8，中文 Windows 的 text=True 必炸 reader 线程**：
+`wsl -l -q` / `wsl -d ... gdb --version` 的 stderr 带中文警告（UTF-8），Popen 默认按 locale
+GBK 严格解码 → UnicodeDecodeError 发生在 Popen 内部 `_readerthread` 线程里，调用方无法
+捕获（pytest 报 PytestUnhandledThreadExceptionWarning，生产=幽灵线程异常）。修法：subprocess
+显式 `encoding="utf-8", errors="replace"`（app.py wsl 探测两处、config.py java -version 一处）。
+
+**踩坑 #30 — 模拟寄存器哈希时 8 位子寄存器是全寄存器的投影**：ch20 种子哈希
+`add cl,[eax]; rol ecx,3`——低 8 位吸收代码字节后旋转的是**整个 ECX**，上一轮旋转把高位
+绕回了低位。把 cl 当独立累加器带出循环 → 假种子 0x3C283DD3、密码全乱；正确做法每轮从当前
+S 取低 8 位再加字节。凡 rol/ror 之后，cl/ch/dl 都混进了别处的位。
+
+| # | 问题 | 根因 | 修法 |
+|---|---|---|---|
+| a | ELF section 名全显示 undefined | binfile 解析器从不读 .shstrtab | 读 e_shstrndx 两遍解析（候选须 SHT_STRTAB，非法回退首个 STRTAB） |
+| c | HEX 跨页数据要手动拼接送解码实验室 | 单页 chunk 截断 | Shift+送入 → 连发最多 8 页自动拼接（块尾 clamp） |
+| d | 解码实验室 utf-8 之外的编码无入口 | 硬编码 TextDecoder | 输出侧编码下拉 utf-8/gbk/latin-1，重渲染自存字节 |
+| e | HEX 数据无法复制出去 | 无按钮 | ⧉ 复制为标准 hexdump（`0x%08x  hex \|ascii\|`） |
+| f | gdb console 中文路径 mojibake（#27） | 行级 utf-8 先行解码 | latin-1 透明读 + 字节级 unescape（test_mi 8 例回归） |
+| g | gdb stdin 何时投递不明确 | placeholder 含糊 | 注明「仅会话启动时投递一次，改动需重启会话」 |
+| l | HEX 输绝对地址 0x08049120 → ram:10091120 倍地址读失败 | unmapped 地址被当块内偏移原样发送 | 前端先定位所属块换算；查不到 → toast 列出可读范围，不发注定失败的请求 |
+| m | 切样本后 gdb 会话仍指旧程序，「启动」点击被 already active 吞掉 | 会话存活跨页面刷新 | 后端按 normcase 比对程序路径自动重启；前端 unhide 启动钮 + stale toast |
+| n | 裸 `python -m lovelyreverse` AttributeError | 顶层 Namespace 没有 serve 子命令默认值 | _normalize_argv 补 serve 前缀（白名单 -h/--help/--version 放行） |
+| o | wsl 探测炸 Popen reader 线程（#29） | text=True 按 GBK 严格解码 UTF-8 stderr | 显式 encoding/errors，三处 spawn 全量排查 |
