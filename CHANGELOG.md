@@ -2,6 +2,22 @@
 
 所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本遵循语义化。
 
+## [Unreleased]
+
+真题打磨（Root-Me KeygenMe by int_0x80 全程工具化做题暴露的短板）。
+
+### 新增
+
+- **指令级单步 ⇣| 指令 / →| 指令**：strip 样本上 gdb 行级 `step` 报 "Cannot find bounds of current function"，补 `-exec-stepi` / `-exec-nexti`（带 stop 态守卫）
+- **gdb 环境变量启动参数**：启动表单新增 env 输入（逗号分隔 KEY=VALUE，含空格值自动加引号）——GTK 等 GUI 样本需要 `DISPLAY=:99` 才能进 WSL 调试
+
+### 修复
+
+- **裸反汇编向后余量**：读取窗口向前扩最多 512 B（入口按指定地址起扫）。混淆样本的 call-实为-jmp 目标常落在命名入口前几个字节（Root-Me 的 0x804935c 首条即 `jmp 0x8049355`），旧实现窗口从入口开扫，第一条向后 JMP 就断流；现在接力解码跨过向后跳转直达 ret。顺带修正：JMP 直落 ret 时终止原因误报 "窗口结束" → 现报 "ret"
+- **`disasm-raw` 地址运算**：Ghidra GenericAddress 不支持减 int，统一走 `getOffset()` / `subtract()`（上一条修复引入的回归）
+- **运行态查询快速失败**：同步模式 gdb 在目标运行时执行 MI 命令会挂满超时——断点列表现在先查运行态直接报错，不再卡前端 25 s
+- **CLI 控制台编码**：启动时把 stdout/stderr 重配为 UTF-8（errors=replace）——GBK 控制台打印 gdb 输出中的替换字符会炸请求线程
+
 ## [0.4.0] — 2026-11-13
 
 **动态调试上线**：gdb 桥打通 Windows（mingw gdb 17.2）与 Linux（WSL gdb 12.1）双侧，APK 静态分析落地。

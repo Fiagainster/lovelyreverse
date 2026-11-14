@@ -7,9 +7,23 @@ import time
 
 import pytest
 
-from lovelyreverse.gdb.session import GdbSession, GdbError, to_wsl_path
+from lovelyreverse.gdb.session import GdbSession, GdbError, parse_env_text, to_wsl_path
 
 FAKE = Path(__file__).parent / "fake_gdb.py"
+
+
+def test_parse_env_text():
+    assert parse_env_text("DISPLAY=:99") == [("DISPLAY", ":99")]
+    assert parse_env_text("DISPLAY=:99, LANG=C.UTF-8") == [
+        ("DISPLAY", ":99"), ("LANG", "C.UTF-8")]
+    assert parse_env_text("A=1\nB=2\n# comment\n\nC=3") == [
+        ("A", "1"), ("B", "2"), ("C", "3")]
+    assert parse_env_text("") == []
+    assert parse_env_text("KEY = spaced value") == [("KEY", "spaced value")]
+    with pytest.raises(GdbError):
+        parse_env_text("NOEQUALS")
+    with pytest.raises(GdbError):
+        parse_env_text("HAS SPACE=1")
 
 
 @pytest.fixture()
@@ -34,6 +48,19 @@ class TestSessionFlow:
         assert info["program"] == "C:\\fake\\target.exe"
         st = session.status()
         assert st["loaded"] and st["program"] == "C:\\fake\\target.exe"
+
+    def test_load_emits_env_commands(self, session, monkeypatch):
+        sent = []
+        real = session.cmd
+
+        def spy(mi_cmd, timeout=25.0):
+            sent.append(mi_cmd)
+            return real(mi_cmd, timeout)
+
+        monkeypatch.setattr(session, "cmd", spy)
+        session.load("C:\\fake\\target.exe", env_text="DISPLAY=:99, FOO=a b")
+        env_cmds = [c for c in sent if c.startswith("-gdb-set env")]
+        assert env_cmds == ['-gdb-set env DISPLAY :99', '-gdb-set env FOO "a b"']
 
     def test_break_insert_list_delete(self, session):
         bk = session.insert_break("*0x00401370")
@@ -96,6 +123,26 @@ class TestSessionFlow:
         session.next_()
         stop = session.wait_stop(timeout=5)
         assert stop is not None and stop["reason"] == "end-stepping-range"
+
+    def test_stepi_nexti(self, session):
+        session.load("C:\\fake\\target.exe")
+        session.insert_break("*0x00401370")
+        session.run()
+        session.wait_stop(timeout=5)
+        for act in (session.stepi_, session.nexti_):
+            act()
+            stop = session.wait_stop(timeout=5)
+            assert stop is not None and stop["reason"] == "end-stepping-range"
+
+    def test_list_breaks_while_running_raises(self, session):
+        session.load("C:\\fake\\target.exe")
+        session.insert_break("*0x00401370")
+        session.run()
+        session.wait_stop(timeout=5)
+        session.state["running"] = True  # simulate live target (MI would block)
+        with pytest.raises(GdbError, match="running"):
+            session.list_breaks()
+        session.state["running"] = False
 
     def test_continue_after_stop(self, session):
         session.load("C:\\fake\\target.exe")

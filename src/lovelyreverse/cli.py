@@ -20,6 +20,14 @@ from lovelyreverse.server.app import AppState, serve
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows consoles default to GBK/CP936 — gdb bridge console streams can
+    # carry mojibake, and a GBK encode error inside a request thread would
+    # kill it.  UTF-8 everywhere, non-representable chars replaced.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 — non-standard streams
+            pass
     parser = argparse.ArgumentParser(
         prog="lvr",
         description="lovelyreverse - a hands-on reverse-engineering workstation powered by Ghidra.",

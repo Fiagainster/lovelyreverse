@@ -32,6 +32,8 @@ for line in sys.stdin:
         out('~"Reading symbols from fake.\\n"')
     elif line.startswith("-gdb-set args"):
         out(f"{token}^done")
+    elif line.startswith("-gdb-set env"):
+        out(f"{token}^done")
     elif line.startswith("-break-insert"):
         state["bp"] += 1
         n = state["bp"]
@@ -46,7 +48,7 @@ for line in sys.stdin:
         out(f"{token}^running")
         time.sleep(0.3)
         out('*stopped,reason="breakpoint-hit",disp="keep",bkptno="1",frame={addr="0x00401370",func="main",args=[]},thread-id="1"')
-    elif line == "-exec-next" or line == "-exec-step":
+    elif line in ("-exec-next", "-exec-step", "-exec-nexti", "-exec-stepi"):
         out(f"{token}^running")
         time.sleep(0.2)
         out('*stopped,reason="end-stepping-range",frame={addr="0x00401375",func="main",args=[]},thread-id="1"')

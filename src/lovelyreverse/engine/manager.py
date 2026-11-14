@@ -731,7 +731,13 @@ class EngineManager:
         pollute the listing/decompiler because Ghidra must pick one alignment
         per byte. The raw decode follows unconditional-JMP targets instead —
         the same thing a human does when hand-reading the HEX view.
+
+        The read window includes a *backward* slack (up to 512 B before
+        ``addr``): obfuscated call-as-jmp targets routinely sit a few bytes
+        ahead of the named entry, and a forward-only window would kill the
+        trace on its first backward jump.
         """
+
         def job():
             program = self._require_program()
             mem = program.getMemory()
@@ -739,15 +745,18 @@ class EngineManager:
             block = mem.getBlock(a)
             if block is None or not block.isInitialized():
                 raise EngineError(f"no initialized memory at 0x{addr:x}")
-            avail = int(block.getEnd().getOffset()) - addr + 1
+            block_start = int(block.getStart().getOffset())
+            addr_int = int(a.getOffset())
+            back = min(512, addr_int - block_start)
+            avail = int(block.getEnd().getOffset()) - addr_int + 1
             n = max(0, min(int(max_bytes), avail, 1 << 16))
             if n == 0:
-                raise EngineError(f"nothing readable at 0x{addr:x}")
-            raw = _read_bytes(mem, a, n)
+                raise EngineError(f"nothing readable at 0x{addr_int:x}")
+            raw = _read_bytes(mem, a.subtract(back), back + n)
             bits = int(program.getMinAddress().getAddressSpace().getSize())
             from lovelyreverse.disasm import decode_trace
 
-            out = decode_trace(raw, addr, mode_bits=bits)
+            out = decode_trace(raw, addr_int - back, mode_bits=bits, entry=addr_int)
             out["block"] = str(block.getName())
             return out
 

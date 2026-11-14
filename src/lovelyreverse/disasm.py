@@ -62,8 +62,16 @@ def decode_trace(
     base: int,
     mode_bits: int = 32,
     max_insn: int = _MAX_INSN_DEFAULT,
+    entry: int | None = None,
 ) -> dict[str, Any]:
     """Decode ``data`` (loaded at virtual address ``base``) along execution order.
+
+    ``entry`` is the address where the sweep starts — defaults to ``base``.
+    The window may extend *before* ``entry`` (the engine reads a backward
+    slack), because obfuscated call-as-jmp targets routinely sit a few bytes
+    ahead of the entry the caller named: an offcut call to ``0x804935c`` whose
+    first insn is ``jmp 0x8049355`` must keep decoding, not die on the window's
+    left edge.
 
     Policy (matches hand-reading a HEX view):
       - linear sweep from ``base``;
@@ -83,7 +91,9 @@ def decode_trace(
     md = _decoder(mode_bits)
     items: list[dict[str, Any]] = []
     visited: set[int] = set()
-    addr = base
+    addr = entry if entry is not None else base
+    if not (base <= addr < base + len(data)):
+        raise ValueError(f"entry {addr:#x} outside read window [{base:#x}, {base + len(data):#x})")
     end = base + len(data)
     stop = "end"
     recovered = 0
@@ -135,6 +145,9 @@ def decode_trace(
                     if "_jcc" in nxt_entry:
                         last_jcc = nxt_entry["_jcc"]
                     visited.add(t)
+                    if nxt.mnemonic.startswith("ret"):
+                        stop = "ret"  # jmp lands straight on ret: trace over
+                        break
                     if nxt.mnemonic == "jmp" and nxt.op_str.startswith("0x"):
                         addr = int(nxt.op_str, 16)  # chained jmp: keep following
                     else:

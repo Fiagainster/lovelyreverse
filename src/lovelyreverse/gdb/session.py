@@ -69,6 +69,28 @@ def find_local_gdb() -> str | None:
     return None
 
 
+def parse_env_text(text: str) -> list[tuple[str, str]]:
+    """Parse ``KEY=VALUE`` pairs separated by commas or newlines.
+
+    GUI samples need ``DISPLAY`` (GTK won't boot without it) — the debugee
+    environment is set through gdb's ``set env`` so both transports behave
+    the same.  Blank lines and ``#`` comments are ignored.
+    """
+    pairs: list[tuple[str, str]] = []
+    for chunk in re.split(r"[\n,]+", text or ""):
+        chunk = chunk.strip()
+        if not chunk or chunk.startswith("#"):
+            continue
+        if "=" not in chunk:
+            raise GdbError(f"bad env entry (want KEY=VALUE): {chunk!r}")
+        key, _, val = chunk.partition("=")
+        key, val = key.strip(), val.strip()
+        if not key or re.search(r"\s", key):
+            raise GdbError(f"bad env key: {chunk!r}")
+        pairs.append((key, val))
+    return pairs
+
+
 class GdbSession:
     """One live gdb MI session.  Use start() — the constructor is internal."""
 
@@ -268,13 +290,17 @@ class GdbSession:
 
     # ------------------------------------------------------------- lifecycle
 
-    def load(self, program_path: str, args: str = "", stdin_text: str = "") -> dict[str, Any]:
+    def load(self, program_path: str, args: str = "", stdin_text: str = "",
+             env_text: str = "") -> dict[str, Any]:
         """Point gdb at the binary (local transport: the path rides MI stdin,
         encoded in the ANSI codepage so 中文 paths survive) and prepare run
-        arguments / stdin redirection."""
+        arguments / stdin redirection / debugee environment."""
         if self.transport == "local":
             fwd = program_path.replace("\\", "/")
             self.cmd(f'-file-exec-and-symbols "{fwd}"')
+        for key, val in parse_env_text(env_text):
+            v = f'"{val}"' if re.search(r"\s", val) else val
+            self.cmd(f"-gdb-set env {key} {v}")
         parts = []
         if args:
             parts.append(args)
@@ -337,6 +363,9 @@ class GdbSession:
         self.cmd(f"-break-delete {number}")
 
     def list_breaks(self) -> list[dict[str, Any]]:
+        # MI blocks on commands while the target runs (sync-mode gdb) — fail
+        # fast instead of hanging the frontend poll for the full timeout.
+        self._require_stopped("listing breakpoints")
         return parse_breakpoint_table(self.cmd("-break-list"))
 
     def _require_stopped(self, what: str) -> None:
@@ -362,6 +391,19 @@ class GdbSession:
     def step_(self) -> dict[str, Any]:
         self._require_stopped("stepping")
         self.cmd("-exec-step")
+        return {"running": True}
+
+    def stepi_(self) -> dict[str, Any]:
+        # Line-level step needs function bounds — on stripped samples gdb
+        # answers "Cannot find bounds of current function"; instruction-level
+        # stepping always works.
+        self._require_stopped("stepping")
+        self.cmd("-exec-stepi")
+        return {"running": True}
+
+    def nexti_(self) -> dict[str, Any]:
+        self._require_stopped("stepping")
+        self.cmd("-exec-nexti")
         return {"running": True}
 
     def finish(self) -> dict[str, Any]:

@@ -158,6 +158,7 @@
         <div class="gdb-args-row">
           <input id="gdb-args" type="text" spellcheck="false" placeholder="程序参数（可选）" />
           <input id="gdb-stdin" type="text" spellcheck="false" placeholder="stdin 文本（可选，喂给 fgets/scanf）" />
+          <input id="gdb-env" type="text" spellcheck="false" placeholder="环境变量（可选，逗号分隔 KEY=VALUE，如 DISPLAY=:99）" />
           <span class="dim" id="gdb-target"></span>
         </div>
         <div class="gdb-grid">
@@ -173,6 +174,8 @@
               <button class="btn btn-xs" id="gdb-continue">▏▶ 继续</button>
               <button class="btn btn-xs" id="gdb-next">→ 跳过</button>
               <button class="btn btn-xs" id="gdb-step">↓ 进入</button>
+              <button class="btn btn-xs" id="gdb-nexti" title="指令级跳过（strip 样本行级 step 会失败）">→| 指令</button>
+              <button class="btn btn-xs" id="gdb-stepi" title="指令级进入（strip 样本行级 step 会失败）">↓| 指令</button>
               <button class="btn btn-xs hidden" id="gdb-interrupt">⏸ 中断</button>
               <button class="btn btn-xs" id="gdb-finish">⤒ 出函数</button>
             </div>

@@ -112,3 +112,27 @@ def test_limit_cap():
     r = decode_trace(b"\x90" * 64, 0xB000, max_insn=10)
     assert r["stop"] == "limit"
     assert len(r["items"]) == 10
+
+
+def test_entry_mid_window_survives_backward_jmp():
+    # The Root-Me offcut-call case: the named entry (0x100c) opens with a
+    # backward jmp to 0x1007.  With a backward slack the trace continues
+    # through the discard cluster instead of dying on the window edge.
+    #   0x1005: 83 c4 04  add esp, 4      (discard pushed return)
+    #   0x1008: eb 0a     jmp 0x1014 (ret)
+    data = bytearray(b"\x90" * 5)          # 0x1000-0x1004: slack nops
+    data += b"\x83\xc4\x04"                # 0x1005: add esp, 4
+    data += b"\xeb\x0a"                    # 0x1008: jmp 0x1014
+    data += b"\x90" * 10                   # 0x100a..0x1013 filler
+    data += b"\xc3"                        # 0x1014: ret
+    r = decode_trace(bytes(data), 0x1000, entry=0x1005)
+    assert r["stop"] == "ret"
+    assert texts(r) == ["add esp, 4", "jmp 0x1014", "ret"]
+
+
+def test_entry_outside_window_raises():
+    try:
+        decode_trace(b"\x90\xc3", 0x1000, entry=0x2000)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass

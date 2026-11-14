@@ -182,7 +182,8 @@ class AppState:
             }
         return self._gdb_env_cache
 
-    def gdb_start(self, transport: str, distro: str, args: str, stdin_text: str) -> dict[str, Any]:
+    def gdb_start(self, transport: str, distro: str, args: str, stdin_text: str,
+                  env_text: str = "") -> dict[str, Any]:
         from lovelyreverse.gdb.session import GdbSession, GdbError
 
         if self.gdb_session is not None:
@@ -199,7 +200,8 @@ class AppState:
         sess = GdbSession(transport=transport, distro=distro)
         sess.start(self.source_path)
         self.gdb_session = sess
-        return sess.load(self.source_path, args=args, stdin_text=stdin_text)
+        return sess.load(self.source_path, args=args, stdin_text=stdin_text,
+                         env_text=env_text)
 
     # ---- shared handlers used by both routes and jobs
 
@@ -538,8 +540,9 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                 distro = str(body.get("distro", "Ubuntu-22.04"))
                 args = str(body.get("args", ""))
                 stdin_text = str(body.get("stdin", ""))
+                env_text = str(body.get("env", ""))
                 try:
-                    info = state.gdb_start(transport, distro, args, stdin_text)
+                    info = state.gdb_start(transport, distro, args, stdin_text, env_text)
                 except Exception as e:  # noqa: BLE001 — surface boot errors verbatim
                     return self._error(f"{type(e).__name__}: {e}", 500)
                 return self._json({"ok": True, "info": info, "status": state.gdb_session.status()})
@@ -550,10 +553,11 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     return self._error("no gdb session", 409)
                 action = str(body.get("action", ""))
                 mapping = {"run": sess.run, "continue": sess.continue_,
-                           "next": sess.next_, "step": sess.step_, "finish": sess.finish,
-                           "interrupt": sess.interrupt}
+                           "next": sess.next_, "step": sess.step_,
+                           "nexti": sess.nexti_, "stepi": sess.stepi_,
+                           "finish": sess.finish, "interrupt": sess.interrupt}
                 if action not in mapping:
-                    return self._error("action must be run|continue|next|step|finish|interrupt")
+                    return self._error("action must be run|continue|next|step|nexti|stepi|finish|interrupt")
                 try:
                     res = mapping[action]()
                 except Exception as e:  # noqa: BLE001

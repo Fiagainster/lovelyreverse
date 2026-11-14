@@ -1352,13 +1352,14 @@ async function gdbStart() {
   const distro = $("#gdb-distro").value.trim() || "Ubuntu-22.04";
   const args = $("#gdb-args").value.trim();
   const stdinText = $("#gdb-stdin").value;
+  const envText = $("#gdb-env").value.trim();
   setBusy(true, "gdb");
   logLine(`gdb session starting (${transport})`, "hi");
   try {
     const res = await gdbApi("start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transport, distro, args, stdin: stdinText }),
+      body: JSON.stringify({ transport, distro, args, stdin: stdinText, env: envText }),
     });
     gdbRenderStatus(res.status);
     await gdbEnsurePolling();
@@ -1400,6 +1401,7 @@ function gdbExit() {
   $("#gdb-exit-btn").classList.add("hidden");
   $("#gdb-args").disabled = false;
   $("#gdb-stdin").disabled = false;
+  $("#gdb-env").disabled = false;
   GD.pendingBps = [];
   $("#gdb-interrupt").classList.add("hidden");
   ["#gdb-breaks", "#gdb-regs", "#gdb-stack", "#gdb-mem", "#gdb-console"].forEach(
@@ -1415,6 +1417,8 @@ function wireGdb() {
   $("#gdb-continue").onclick = () => gdbExec("continue");
   $("#gdb-next").onclick = () => gdbExec("next");
   $("#gdb-step").onclick = () => gdbExec("step");
+  $("#gdb-nexti").onclick = () => gdbExec("nexti");
+  $("#gdb-stepi").onclick = () => gdbExec("stepi");
   $("#gdb-finish").onclick = () => gdbExec("finish");
   $("#gdb-interrupt").onclick = () => gdbExec("interrupt");
   $("#gdb-bp-add").onclick = async () => {

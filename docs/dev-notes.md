@@ -277,3 +277,21 @@
 **踩坑 #20 — WSL /tmp 挥发性**：VM 空闲自动关闭后 /tmp 清空——fixture 编译产物放 /mnt/d（持久）。另外 Git Bash 的 MSYS 路径转换会把 `/mnt/d/...` 参数改写成 `C:/Program Files/Git/mnt/...`——WSL 命令一律包 `bash -c "..."`。
 
 **设计决策**：gdb 会话独立于引擎 worker 线程（独立进程+独立锁），前端 1.2s 轮询状态而非 websocket；pending 断点队列让「先摆断点再启动」这一调试器直觉成立；fgets 阻塞场景由中断按钮（-exec-interrupt）兜底。
+
+## KeygenMe 真题工具化做题复盘（2026-11-14，Unreleased 5 项修复）
+
+全程只用本工具（静态链 strings→xref→反编译被污染→⚡裸反汇编三段接力；动态链 gdb 桥 + 寄存器偷参）解出 Root-Me KeygenMe by int_0x80。serial = Σ (int8)name[i]^(i+2) mod 2⁶⁴。过程中暴露并修复：
+
+**踩坑 #21 — gdb 停机时寄存器是「执行前」快照**：断点命中在 `mov ecx,[ebp-0x2c]` 处，面板 ecx 是该条指令**执行前**的旧值，差点据此误判比较寄存器错位、以为反调试烧了 ecx。判断数据流时先想 eip 指向的指令跑没跑。验证手段：直接读内存 `[ebp-0x2c]` 对拍。
+
+**踩坑 #22 — RDTSC 反调试的断点放置**：gauntlet 只罩 rdtsc#1→rdtsc#2 这一窗，断点只要不在窗内就不会污染差值。strtoull@plt 断点安全（rdtsc#1 在其返回之后才执行）。别把「窗口」想成整个函数。
+
+**踩坑 #23 — strip 样本行级 step 必炸**：`-exec-step` 报 "Cannot find bounds of current function"（没有行号表就找不到函数边界）。指令级 `-exec-stepi` / `-exec-nexti` 永远可用——已加 UI 按钮（⇣| 指令 / →| 指令）。
+
+**踩坑 #24 — GUI 样本进调试要喂环境变量**：GTK 程序起不来时不是崩溃而是 `Gtk: cannot open display`。gdb 启动表单新增 env 输入（KEY=VALUE 逗号分隔），桥内部走 `-gdb-set env`。配合 Xvfb（:99）即可在无人值守 WSL 里跑 GUI crackme。无头驱动配方：`Xvfb :99 & xdotool search --name 窗口名 windowfocus/mousemove/click/type` + `import -window root` 截图——全程后台，不抢 Windows 焦点。
+
+**踩坑 #25 — 裸反汇编入口≠窗口起点**：混淆 call-实为-jmp 的目标常比调用方写的地址靠前几个字节（0x804935c 首条即 `jmp 0x8049355`），窗口从入口向后开扫时第一条向后 JMP 就断流。修复：读取窗口向前扩 512 B 余量，扫描仍从指定入口起（decode_trace 新增 entry 参数）。顺带修了两处连带问题：JMP 直落 ret 的终止原因误报「窗口结束」；Ghidra GenericAddress 不支持 `addr - int`（要用 `getOffset()`/`subtract()`）。
+
+**踩坑 #26 — 同步模式 gdb 运行态执行 MI 必挂**：目标 running 时任何 MI 命令（如 `-break-list`）会阻塞到 25 s 超时。前端只在停机时轮询的状态类命令也要加 `_require_stopped` 快速失败，别信调用方时序。
+
+**辅助经验 — 浏览器自动化**：browser-use 的 press_key 对自定义 keydown 监听不生效（真用户不受影响），改用 evaluate_script 里 `dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`；click 工具在无头视口报 NATIVE_BROWSER_VIEWPORT_UNAVAILABLE，DOM `.click()` 稳定。
